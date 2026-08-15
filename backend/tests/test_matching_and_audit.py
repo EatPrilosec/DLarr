@@ -2,7 +2,7 @@ import pytest
 from unittest.mock import patch
 from backend.app.core.database import AsyncSessionLocal
 from backend.app.models.show import Show, Episode, EpisodeSourceMetadata
-from backend.app.services.matching_engine import normalize_title
+from backend.app.services.matching_engine import normalize_title, token_sorted_title, is_title_match
 from backend.app.services.ollama_client import OllamaClient
 from backend.app.services.audit_engine import AuditEngine
 
@@ -11,6 +11,23 @@ def test_normalize_title():
     assert normalize_title("The Walking Dead: Season 1!") == "the walking dead season 1"
     assert normalize_title("Doctor Who (2005)") == "doctor who 2005"
     assert normalize_title(None) == ""
+
+
+def test_token_sorted_and_fuzzy_title_match():
+    # Reversed names matching
+    match, method, conf = is_title_match("Opie and Flirt", "Flirt and Opie")
+    assert match is True
+    assert method == "EXACT_TITLE_REORDERED"
+
+    match, method, conf = is_title_match("Boomer and Josh", "Josh and Boomer")
+    assert match is True
+    assert method == "EXACT_TITLE_REORDERED"
+
+    # Slight spelling difference in names (e.g. Sueki vs Suecki)
+    match, method, conf = is_title_match("Sueki and Coach", "Suecki and Coach")
+    assert match is True
+    assert method == "FUZZY_TITLE_MATCH"
+    assert conf >= 0.88
 
 
 @pytest.mark.asyncio
@@ -70,7 +87,7 @@ async def test_audit_engine_execution():
         await db.commit()
 
         mock_audit_res = {
-            "season_verdict": "PASSED",
+            "verdict": "PASSED",
             "findings": [
                 {
                     "episode_id": ep.id,

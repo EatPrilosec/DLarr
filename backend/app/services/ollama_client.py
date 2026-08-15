@@ -1,6 +1,49 @@
 import json
+import re
 from typing import Dict, Any, List, Optional, Tuple
 import httpx
+
+
+def extract_json_from_llm(content: str) -> Any:
+    if not content:
+        raise ValueError("Empty LLM response content")
+
+    # 1. Strip thinking tags <think>...</think>
+    cleaned = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL | re.IGNORECASE).strip()
+
+    # 2. Try direct parse
+    try:
+        return json.loads(cleaned)
+    except Exception:
+        pass
+
+    # 3. Strip markdown code fences ```json ... ```
+    match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", cleaned, re.IGNORECASE)
+    if match:
+        try:
+            return json.loads(match.group(1).strip())
+        except Exception:
+            pass
+
+    # 4. Find outermost { ... }
+    first_brace = cleaned.find("{")
+    last_brace = cleaned.rfind("}")
+    if first_brace != -1 and last_brace != -1 and last_brace > first_brace:
+        try:
+            return json.loads(cleaned[first_brace:last_brace + 1])
+        except Exception:
+            pass
+
+    # 5. Find outermost [ ... ]
+    first_bracket = cleaned.find("[")
+    last_bracket = cleaned.rfind("]")
+    if first_bracket != -1 and last_bracket != -1 and last_bracket > first_bracket:
+        try:
+            return json.loads(cleaned[first_bracket:last_bracket + 1])
+        except Exception:
+            pass
+
+    raise ValueError(f"Could not parse valid JSON from LLM response: {cleaned[:200]}")
 
 
 class OllamaClient:
@@ -72,7 +115,7 @@ class OllamaClient:
             response.raise_for_status()
             data = response.json()
             content = data.get("message", {}).get("content", "")
-            return json.loads(content)
+            return extract_json_from_llm(content)
 
     @classmethod
     async def generate_with_fallback(
@@ -88,7 +131,6 @@ class OllamaClient:
         If it fails, automatically attempts fallback_model.
         Returns: (parsed_json_result, model_used)
         """
-        # Try primary model
         try:
             result = await cls.query_model_structured(
                 base_url=base_url,
