@@ -234,6 +234,10 @@ class MatchingEngine:
                 await log_callback(msg)
             if job:
                 job.logs = (job.logs or "") + f"\n{msg}"
+                try:
+                    await db.commit()
+                except Exception:
+                    pass
 
         await log(f"Starting ingestion for Sonarr series ID {sonarr_series_id}...")
 
@@ -439,6 +443,11 @@ class MatchingEngine:
             if job:
                 job.progress = round((current_idx / total_eps) * 80.0, 1)
                 job.message = f"Matching episode {current_idx}/{total_eps}: S{canonical_ep.season_number}E{canonical_ep.episode_number} - {canonical_ep.title}"
+                if current_idx % 5 == 0 or current_idx == total_eps:
+                    try:
+                        await db.commit()
+                    except Exception:
+                        pass
 
             # 1. Match TMDB
             matched_tmdb = await cls.match_episode_against_source(
