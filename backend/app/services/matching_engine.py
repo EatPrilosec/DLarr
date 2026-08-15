@@ -52,17 +52,111 @@ def is_title_match(t1: Optional[str], t2: Optional[str]) -> Tuple[bool, str, flo
     if s1 and s2 and s1 == s2:
         return True, "EXACT_TITLE_REORDERED", 0.98
 
-    # Fuzzy similarity check
+    # Character similarity check
     sim = difflib.SequenceMatcher(None, n1, n2).ratio()
     if sim >= 0.88:
         return True, "FUZZY_TITLE_MATCH", round(sim, 2)
 
-    # Token overlap check (for titles like "Sueki and Coach" vs "Suecki and Coach")
+    # Token overlap check (e.g. "Sueki and Coach" vs "Suecki and Coach")
     s_sim = difflib.SequenceMatcher(None, s1, s2).ratio()
     if s_sim >= 0.88:
         return True, "FUZZY_TITLE_MATCH", round(s_sim, 2)
 
     return False, "NONE", 0.0
+
+
+class SourceIndex:
+    """Pre-indexed O(1) repository for fast episode matching across a source."""
+    def __init__(self, source_name: str, episodes: List[Dict[str, Any]]):
+        self.source_name = source_name
+        self.episodes = episodes
+        self.by_exact_title: Dict[str, Dict[str, Any]] = {}
+        self.by_token_title: Dict[str, Dict[str, Any]] = {}
+        self.by_season: Dict[int, List[Dict[str, Any]]] = {}
+
+        for ep in episodes:
+            t = ep.get("title")
+            if t:
+                norm = normalize_title(t)
+                tok = token_sorted_title(t)
+                if norm and norm not in self.by_exact_title:
+                    self.by_exact_title[norm] = ep
+                if tok and tok not in self.by_token_title:
+                    self.by_token_title[tok] = ep
+            
+            s = ep.get("season")
+            if s is not None:
+                self.by_season.setdefault(s, []).append(ep)
+
+    def find_match(self, canonical_ep: Episode) -> Optional[Dict[str, Any]]:
+        norm = normalize_title(canonical_ep.title)
+        tok = token_sorted_title(canonical_ep.title)
+
+        # 1. Exact normalized title match
+        if norm in self.by_exact_title:
+            cand = self.by_exact_title[norm]
+            return {
+                "id": str(cand.get("id")),
+                "season": cand.get("season"),
+                "episode": cand.get("episode"),
+                "title": cand.get("title"),
+                "overview": cand.get("overview"),
+                "air_date": cand.get("air_date"),
+                "method": "EXACT_TITLE",
+                "confidence": 1.0,
+                "raw": cand.get("raw", cand)
+            }
+
+        # 2. Token-sorted title match (reordered words)
+        if tok in self.by_token_title:
+            cand = self.by_token_title[tok]
+            return {
+                "id": str(cand.get("id")),
+                "season": cand.get("season"),
+                "episode": cand.get("episode"),
+                "title": cand.get("title"),
+                "overview": cand.get("overview"),
+                "air_date": cand.get("air_date"),
+                "method": "EXACT_TITLE_REORDERED",
+                "confidence": 0.98,
+                "raw": cand.get("raw", cand)
+            }
+
+        # 3. Same-season fuzzy match
+        same_season_eps = self.by_season.get(canonical_ep.season_number, [])
+        for cand in same_season_eps:
+            matched, method, conf = is_title_match(canonical_ep.title, cand.get("title"))
+            if matched:
+                return {
+                    "id": str(cand.get("id")),
+                    "season": cand.get("season"),
+                    "episode": cand.get("episode"),
+                    "title": cand.get("title"),
+                    "overview": cand.get("overview"),
+                    "air_date": cand.get("air_date"),
+                    "method": method,
+                    "confidence": conf,
+                    "raw": cand.get("raw", cand)
+                }
+
+        # 4. Cross-season fuzzy match
+        for cand in self.episodes:
+            if cand.get("season") != canonical_ep.season_number:
+                matched, method, conf = is_title_match(canonical_ep.title, cand.get("title"))
+                if matched:
+                    return {
+                        "id": str(cand.get("id")),
+                        "season": cand.get("season"),
+                        "episode": cand.get("episode"),
+                        "title": cand.get("title"),
+                        "overview": cand.get("overview"),
+                        "air_date": cand.get("air_date"),
+                        "method": f"{method}_CROSS_SEASON",
+                        "confidence": conf * 0.95,
+                        "raw": cand.get("raw", cand)
+                    }
+
+        return None
 
 
 class MatchingEngine:
@@ -83,7 +177,7 @@ class MatchingEngine:
 
         # Build candidate list payload
         candidate_payload = []
-        for c in candidates[:20]:
+        for c in candidates[:15]:
             candidate_payload.append({
                 "candidate_id": str(c.get("id")),
                 "season": c.get("season"),
@@ -133,77 +227,34 @@ class MatchingEngine:
             return {"error": str(e), "is_match": False, "confidence": 0}
 
     @classmethod
-    async def match_episode_against_source(
+    async def match_episode_against_index(
         cls,
         canonical_ep: Episode,
-        source_episodes_all: List[Dict[str, Any]],
-        source_name: str,
+        source_index: SourceIndex,
         ollama_url: str,
         primary_model: str,
         fallback_model: Optional[str]
     ) -> Optional[Dict[str, Any]]:
-        """
-        Multi-tier match for a single episode against all available source episodes:
-        1. Exact or reordered/fuzzy title match in same season.
-        2. Exact or reordered/fuzzy title match across ANY season of the source.
-        3. LLM semantic candidate search if no title match found.
-        """
-        if not source_episodes_all:
-            return None
+        # 1. Fast path: O(1) exact, reordered, or fuzzy title match
+        match = source_index.find_match(canonical_ep)
+        if match:
+            return match
 
-        # 1. Check same season candidates first
-        same_season_candidates = [
-            c for c in source_episodes_all if c.get("season") == canonical_ep.season_number
-        ]
-        
-        for cand in same_season_candidates:
-            matched, method, conf = is_title_match(canonical_ep.title, cand.get("title"))
-            if matched:
-                return {
-                    "id": str(cand.get("id")),
-                    "season": cand.get("season"),
-                    "episode": cand.get("episode"),
-                    "title": cand.get("title"),
-                    "overview": cand.get("overview"),
-                    "air_date": cand.get("air_date"),
-                    "method": method,
-                    "confidence": conf,
-                    "raw": cand.get("raw", cand)
-                }
-
-        # 2. Check all other seasons for title match (cross-season numbering differences)
-        for cand in source_episodes_all:
-            if cand.get("season") != canonical_ep.season_number:
-                matched, method, conf = is_title_match(canonical_ep.title, cand.get("title"))
-                if matched:
-                    return {
-                        "id": str(cand.get("id")),
-                        "season": cand.get("season"),
-                        "episode": cand.get("episode"),
-                        "title": cand.get("title"),
-                        "overview": cand.get("overview"),
-                        "air_date": cand.get("air_date"),
-                        "method": f"{method}_CROSS_SEASON",
-                        "confidence": conf * 0.95,
-                        "raw": cand.get("raw", cand)
-                    }
-
-        # 3. LLM Semantic Match if no exact/fuzzy title match found
+        # 2. LLM fallback if there are plausible candidate episodes in the same season
         if ollama_url:
-            # Build candidate list prioritized: same season candidates first, then adjacent
-            llm_candidates = same_season_candidates if same_season_candidates else source_episodes_all[:20]
-            if llm_candidates:
+            same_season_cands = source_index.by_season.get(canonical_ep.season_number, [])
+            if same_season_cands:
                 llm_res = await cls.match_source_candidates_with_llm(
                     ollama_url=ollama_url,
                     primary_model=primary_model,
                     fallback_model=fallback_model,
                     canonical_ep=canonical_ep,
-                    candidates=llm_candidates,
-                    source_name=source_name
+                    candidates=same_season_cands,
+                    source_name=source_index.source_name
                 )
                 if llm_res and llm_res.get("is_match") and llm_res.get("matched_candidate_id"):
                     target_id = str(llm_res["matched_candidate_id"])
-                    chosen = next((c for c in source_episodes_all if str(c.get("id")) == target_id), None)
+                    chosen = next((c for c in source_index.episodes if str(c.get("id")) == target_id), None)
                     if chosen:
                         conf = float(llm_res.get("confidence", 80)) / 100.0
                         return {
@@ -365,7 +416,6 @@ class MatchingEngine:
                     show.tmdb_id = tmdb_id
                     await log(f"Fetching TMDB data for ID {tmdb_id}...")
                     seasons = set(ep.season_number for ep in episodes_map.values())
-                    # Also include Season 0 specials
                     seasons.add(0)
                     for s in sorted(seasons):
                         eps = await TMDBClient.get_season_episodes(tmdb_key, tmdb_id, s)
@@ -427,7 +477,12 @@ class MatchingEngine:
             except Exception as e:
                 await log(f"OMDb fetch error: {str(e)}")
 
-        # D. Subtitles / Transcripts
+        # D. Build Pre-Indexed Lookup Repositories
+        tmdb_index = SourceIndex("TMDB", all_tmdb_episodes)
+        tvmaze_index = SourceIndex("TVmaze", all_tvmaze_episodes)
+        omdb_index = SourceIndex("OMDb", all_omdb_episodes)
+
+        # E. Subtitles / Transcripts
         subdl_key = config.get("subdl_api_key")
 
         # 5. Matching Loop for each Episode across each Source
@@ -443,23 +498,21 @@ class MatchingEngine:
             if job:
                 job.progress = round((current_idx / total_eps) * 80.0, 1)
                 job.message = f"Matching episode {current_idx}/{total_eps}: S{canonical_ep.season_number}E{canonical_ep.episode_number} - {canonical_ep.title}"
-                if current_idx % 5 == 0 or current_idx == total_eps:
+                if current_idx % 10 == 0 or current_idx == total_eps:
                     try:
                         await db.commit()
                     except Exception:
                         pass
 
             # 1. Match TMDB
-            matched_tmdb = await cls.match_episode_against_source(
+            matched_tmdb = await cls.match_episode_against_index(
                 canonical_ep=canonical_ep,
-                source_episodes_all=all_tmdb_episodes,
-                source_name="TMDB",
+                source_index=tmdb_index,
                 ollama_url=ollama_url,
                 primary_model=primary_model,
                 fallback_model=fallback_model
             )
             if matched_tmdb:
-                # Check if already added
                 stmt_exist = select(EpisodeSourceMetadata).where(
                     EpisodeSourceMetadata.episode_id == canonical_ep.id,
                     EpisodeSourceMetadata.source_name == "tmdb"
@@ -485,10 +538,9 @@ class MatchingEngine:
                     db.add(meta)
 
             # 2. Match TVmaze
-            matched_tvmaze = await cls.match_episode_against_source(
+            matched_tvmaze = await cls.match_episode_against_index(
                 canonical_ep=canonical_ep,
-                source_episodes_all=all_tvmaze_episodes,
-                source_name="TVmaze",
+                source_index=tvmaze_index,
                 ollama_url=ollama_url,
                 primary_model=primary_model,
                 fallback_model=fallback_model
@@ -519,10 +571,9 @@ class MatchingEngine:
                     db.add(meta)
 
             # 3. Match OMDb
-            matched_omdb = await cls.match_episode_against_source(
+            matched_omdb = await cls.match_episode_against_index(
                 canonical_ep=canonical_ep,
-                source_episodes_all=all_omdb_episodes,
-                source_name="OMDb",
+                source_index=omdb_index,
                 ollama_url=ollama_url,
                 primary_model=primary_model,
                 fallback_model=fallback_model
@@ -551,42 +602,6 @@ class MatchingEngine:
                         raw_metadata=json.dumps(matched_omdb["raw"])
                     )
                     db.add(meta)
-
-            # 4. SubDL Subtitles
-            if subdl_key:
-                try:
-                    subs = await SubDLClient.search_subtitles(
-                        api_key=subdl_key,
-                        imdb_id=show.imdb_id,
-                        tmdb_id=show.tmdb_id,
-                        season_number=canonical_ep.season_number,
-                        episode_number=canonical_ep.episode_number
-                    )
-                    if subs:
-                        stmt_exist = select(EpisodeSourceMetadata).where(
-                            EpisodeSourceMetadata.episode_id == canonical_ep.id,
-                            EpisodeSourceMetadata.source_name == "subdl"
-                        )
-                        res_exist = await db.execute(stmt_exist)
-                        existing_meta = res_exist.scalars().first()
-                        if not existing_meta:
-                            sub_meta = EpisodeSourceMetadata(
-                                episode_id=canonical_ep.id,
-                                show_id=show.id,
-                                source_name="subdl",
-                                source_show_id=show.imdb_id,
-                                source_season_number=canonical_ep.season_number,
-                                source_episode_number=canonical_ep.episode_number,
-                                title=f"Subtitles S{canonical_ep.season_number}E{canonical_ep.episode_number}",
-                                has_transcript=True,
-                                transcript_preview="Subtitle release indexed from SubDL.",
-                                match_method="EXACT_TITLE",
-                                match_confidence=1.0,
-                                raw_metadata=json.dumps(subs[0])
-                            )
-                            db.add(sub_meta)
-                except Exception:
-                    pass
 
         await db.commit()
         await log("Completed multi-source episode matching pass.")
