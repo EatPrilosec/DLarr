@@ -156,6 +156,22 @@ class SourceIndex:
                         "raw": cand.get("raw", cand)
                     }
 
+        # 5. Exact Air Date match in the same season (for sources with placeholder episode names)
+        if canonical_ep.air_date:
+            for cand in same_season_eps:
+                if cand.get("air_date") == canonical_ep.air_date:
+                    return {
+                        "id": str(cand.get("id")),
+                        "season": cand.get("season"),
+                        "episode": cand.get("episode"),
+                        "title": cand.get("title"),
+                        "overview": cand.get("overview"),
+                        "air_date": cand.get("air_date"),
+                        "method": "EXACT_AIR_DATE_MATCH",
+                        "confidence": 0.95,
+                        "raw": cand.get("raw", cand)
+                    }
+
         return None
 
 
