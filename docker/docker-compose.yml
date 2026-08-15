@@ -1,0 +1,20 @@
+services:
+  dlarr:
+    image: ghcr.io/dlarr/dlarr:latest
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: dlarr
+    restart: unless-stopped
+    ports:
+      - "6752:6752"
+    volumes:
+      - dlarr_config:/config
+    environment:
+      - DLARR_PORT=6752
+      - DLARR_DATA_DIR=/config
+      - TZ=UTC
+
+volumes:
+  dlarr_config:
+    driver: local
