@@ -159,6 +159,19 @@ class SourceIndex:
         return None
 
 
+def filter_plausible_candidates(canonical_ep: Episode, candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    canon_toks = set(token_sorted_title(canonical_ep.title).split())
+    plausible = []
+    for c in candidates:
+        c_toks = set(token_sorted_title(c.get("title")).split())
+        # Keyword intersection or exact air date match
+        if canon_toks.intersection(c_toks):
+            plausible.append(c)
+        elif canonical_ep.air_date and c.get("air_date") and canonical_ep.air_date == c.get("air_date"):
+            plausible.append(c)
+    return plausible
+
+
 class MatchingEngine:
     @staticmethod
     async def match_source_candidates_with_llm(
@@ -177,7 +190,7 @@ class MatchingEngine:
 
         # Build candidate list payload
         candidate_payload = []
-        for c in candidates[:15]:
+        for c in candidates[:10]:
             candidate_payload.append({
                 "candidate_id": str(c.get("id")),
                 "season": c.get("season"),
@@ -190,8 +203,7 @@ class MatchingEngine:
         system_prompt = (
             "You are an expert TV metadata matching engine. Your task is to match a target TV episode "
             "from Sonarr with its exact counterpart from an external source metadata database, even if episode "
-            "numbers, season numbers, titles, or descriptions differ (due to broadcast orders, "
-            "multi-part episodes, or translated titles).\n\n"
+            "numbers, season numbers, titles, or descriptions differ.\n\n"
             "Output JSON only in this format:\n"
             "{\n"
             '  "matched_candidate_id": "candidate_id_string_or_null",\n'
@@ -240,16 +252,17 @@ class MatchingEngine:
         if match:
             return match
 
-        # 2. LLM fallback if there are plausible candidate episodes in the same season
+        # 2. Filter plausible candidates before querying Ollama
         if ollama_url:
             same_season_cands = source_index.by_season.get(canonical_ep.season_number, [])
-            if same_season_cands:
+            plausible = filter_plausible_candidates(canonical_ep, same_season_cands)
+            if plausible:
                 llm_res = await cls.match_source_candidates_with_llm(
                     ollama_url=ollama_url,
                     primary_model=primary_model,
                     fallback_model=fallback_model,
                     canonical_ep=canonical_ep,
-                    candidates=same_season_cands,
+                    candidates=plausible,
                     source_name=source_index.source_name
                 )
                 if llm_res and llm_res.get("is_match") and llm_res.get("matched_candidate_id"):
@@ -270,6 +283,7 @@ class MatchingEngine:
                         }
 
         return None
+
 
     @classmethod
     async def process_show_ingestion(
