@@ -1,6 +1,7 @@
 import json
 import re
 import difflib
+from datetime import datetime
 from typing import Dict, Any, List, Optional, Tuple, Callable, Awaitable
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -178,13 +179,40 @@ class SourceIndex:
 def filter_plausible_candidates(canonical_ep: Episode, candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     canon_toks = set(token_sorted_title(canonical_ep.title).split())
     plausible = []
+    
+    c_date = None
+    if canonical_ep.air_date:
+        try:
+            c_date = datetime.strptime(canonical_ep.air_date[:10], "%Y-%m-%d").date()
+        except Exception:
+            pass
+
     for c in candidates:
         c_toks = set(token_sorted_title(c.get("title")).split())
-        # Keyword intersection or exact air date match
+        # 1. Keyword intersection
         if canon_toks.intersection(c_toks):
             plausible.append(c)
-        elif canonical_ep.air_date and c.get("air_date") and canonical_ep.air_date == c.get("air_date"):
-            plausible.append(c)
+            continue
+
+        # 2. Same or adjacent episode number in the same season
+        if c.get("season") == canonical_ep.season_number and c.get("episode") is not None:
+            try:
+                if abs(int(c.get("episode")) - canonical_ep.episode_number) <= 1:
+                    plausible.append(c)
+                    continue
+            except Exception:
+                pass
+
+        # 3. Air date proximity (within +/- 7 days)
+        if c_date and c.get("air_date"):
+            try:
+                cand_date = datetime.strptime(c.get("air_date")[:10], "%Y-%m-%d").date()
+                if abs((cand_date - c_date).days) <= 7:
+                    plausible.append(c)
+                    continue
+            except Exception:
+                pass
+
     return plausible
 
 
