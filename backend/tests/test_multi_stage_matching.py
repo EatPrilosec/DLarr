@@ -219,3 +219,39 @@ async def test_batch_cascades_through_multiple_fallbacks():
         )
         assert confirmed_ids == {101, 102, 103}
         assert model_used == "primary+fb_1+fb_2"
+
+
+@pytest.mark.asyncio
+async def test_json_string_fallback_models_parsed():
+    # Test that when config dictionary contains JSON string for fallback_models, it cascades through both
+    ep1 = Episode(id=201, season_number=1, episode_number=1, title="One")
+    ep2 = Episode(id=202, season_number=1, episode_number=2, title="Two")
+
+    batch_pairs = [
+        (ep1, {"season": 1, "episode": 1, "title": "One"}),
+        (ep2, {"season": 1, "episode": 2, "title": "Two"}),
+    ]
+
+    async def mock_query(base_url, model, user_prompt, system_prompt=None, timeout=None):
+        if model == "primary":
+            return "S01E02"  # failed ep2
+        elif model == "fb_alpha":
+            return "S01E02"  # also failed ep2
+        elif model == "fb_beta":
+            return "yes"     # confirmed ep2
+        return ""
+
+    raw_json_fallbacks = '["fb_alpha", "fb_beta"]'
+    parsed_fallbacks = json.loads(raw_json_fallbacks)
+
+    with patch("backend.app.services.ollama_client.OllamaClient.query_model_text", side_effect=mock_query):
+        confirmed_ids, model_used = await MatchingEngine.ai_batch_confirm_matches(
+            ollama_url="http://mock:11434",
+            primary_model="primary",
+            fallback_model=parsed_fallbacks,
+            show_title="Test Show",
+            source_name="TMDB",
+            batch_pairs=batch_pairs
+        )
+        assert confirmed_ids == {201, 202}
+        assert model_used == "primary+fb_alpha+fb_beta"

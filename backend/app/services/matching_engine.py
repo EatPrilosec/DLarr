@@ -1004,12 +1004,25 @@ class MatchingEngine:
         ollama_url = config.get("ollama_url", "http://localhost:11434")
         primary_model = config.get("ollama_primary_model", "gemma4:e2b")
         
-        fallback_models = config.get("ollama_fallback_models")
-        if not fallback_models or not isinstance(fallback_models, list):
-            if config.get("ollama_fallback_model"):
-                fallback_models = [config.get("ollama_fallback_model")]
-            else:
-                fallback_models = ["Gemma-4-E2B-it-uncensored-GGUF:Q4_K_M"]
+        raw_fallbacks = config.get("ollama_fallback_models")
+        fallback_models: List[str] = []
+        if isinstance(raw_fallbacks, list):
+            fallback_models = [str(m).strip() for m in raw_fallbacks if str(m).strip()]
+        elif isinstance(raw_fallbacks, str) and raw_fallbacks.strip():
+            try:
+                parsed = json.loads(raw_fallbacks)
+                if isinstance(parsed, list):
+                    fallback_models = [str(m).strip() for m in parsed if str(m).strip()]
+                elif isinstance(parsed, str) and parsed.strip():
+                    fallback_models = [parsed.strip()]
+            except Exception:
+                fallback_models = [m.strip() for m in raw_fallbacks.split(",") if m.strip()]
+
+        if not fallback_models and config.get("ollama_fallback_model"):
+            fallback_models = [str(config.get("ollama_fallback_model")).strip()]
+
+        if not fallback_models:
+            fallback_models = ["Gemma-4-E2B-it-uncensored-GGUF:Q4_K_M"]
 
         batch_size = int(config.get("ai_batch_size", 10)) if str(config.get("ai_batch_size", "")).isdigit() else 10
         batch_size = max(1, batch_size)
