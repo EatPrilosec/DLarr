@@ -90,9 +90,7 @@ export interface Show {
   created_at: string;
   updated_at: string;
   episode_count: number;
-  mapped_sources_summary?: {
-    sources: string[];
-  };
+  mapped_sources_summary?: Record<string, number> | { sources?: string[] } | null;
   episodes?: Episode[];
 }
 

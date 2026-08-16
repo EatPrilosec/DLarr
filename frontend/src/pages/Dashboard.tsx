@@ -161,14 +161,34 @@ export const Dashboard: React.FC<DashboardProps> = ({ onSelectShow, onOpenImport
                       Mapped Sources
                     </span>
                     <div className="flex flex-wrap gap-1.5">
-                      {show.mapped_sources_summary?.sources.map(src => (
-                        <span
-                          key={src}
-                          className="px-2 py-0.5 rounded bg-dark-700 text-slate-300 border border-dark-600 text-[10px] font-mono font-medium uppercase"
-                        >
-                          {src}
-                        </span>
-                      )) || <span className="text-xs text-slate-500">None</span>}
+                      {(() => {
+                        const summary = show.mapped_sources_summary;
+                        if (!summary) return <span className="text-xs text-slate-500">None</span>;
+                        if ('sources' in summary && Array.isArray(summary.sources)) {
+                          if (summary.sources.length === 0) return <span className="text-xs text-slate-500">None</span>;
+                          return summary.sources.map(src => (
+                            <span
+                              key={src}
+                              className="px-2 py-0.5 rounded bg-dark-700 text-slate-300 border border-dark-600 text-[10px] font-mono font-medium uppercase"
+                            >
+                              {src}
+                            </span>
+                          ));
+                        }
+                        const entries = Object.entries(summary);
+                        if (entries.length === 0) return <span className="text-xs text-slate-500">None</span>;
+                        return entries.map(([src, count]) => (
+                          <span
+                            key={src}
+                            className="px-2 py-0.5 rounded bg-dark-700 text-slate-300 border border-dark-600 text-[10px] font-mono font-medium uppercase flex items-center space-x-1"
+                          >
+                            <span>{src}</span>
+                            {typeof count === 'number' && (
+                              <span className="text-indigo-400 font-bold">({count})</span>
+                            )}
+                          </span>
+                        ));
+                      })()}
                     </div>
                   </div>
                 </div>
