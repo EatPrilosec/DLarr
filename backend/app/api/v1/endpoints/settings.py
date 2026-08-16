@@ -14,6 +14,7 @@ from backend.app.services.tvmaze_client import TVmazeClient
 from backend.app.services.omdb_client import OMDbClient
 from backend.app.services.subdl_client import SubDLClient
 from backend.app.services.opensubtitles_client import OpenSubtitlesClient
+from backend.app.services.concurrency_manager import concurrency_manager
 
 router = APIRouter(prefix="/settings", tags=["settings"])
 
@@ -25,6 +26,12 @@ async def get_settings(db: AsyncSession = Depends(get_db)):
     records = res.scalars().all()
     data = {r.key: r.value for r in records}
     
+    max_jobs = int(data.get("max_concurrent_jobs", 1)) if str(data.get("max_concurrent_jobs", "")).isdigit() else 1
+    max_ollama = int(data.get("max_concurrent_ollama_requests", 1)) if str(data.get("max_concurrent_ollama_requests", "")).isdigit() else 1
+
+    # Ensure concurrency manager is synced with loaded settings
+    concurrency_manager.update_limits(max_jobs, max_ollama)
+
     # Return with defaults
     return AppSettings(
         ollama_url=data.get("ollama_url", "http://localhost:11434"),
@@ -37,7 +44,9 @@ async def get_settings(db: AsyncSession = Depends(get_db)):
         omdb_api_key=data.get("omdb_api_key", ""),
         subdl_api_key=data.get("subdl_api_key", ""),
         opensubtitles_api_key=data.get("opensubtitles_api_key", ""),
-        opensubtitles_user_agent=data.get("opensubtitles_user_agent", "DLarr v0.1")
+        opensubtitles_user_agent=data.get("opensubtitles_user_agent", "DLarr v0.1"),
+        max_concurrent_jobs=max_jobs,
+        max_concurrent_ollama_requests=max_ollama
     )
 
 
@@ -53,6 +62,9 @@ async def update_settings(payload: AppSettings, db: AsyncSession = Depends(get_d
         else:
             db.add(Setting(key=k, value=str(v)))
     await db.commit()
+
+    # Dynamically update concurrency manager semaphores
+    concurrency_manager.update_limits(payload.max_concurrent_jobs, payload.max_concurrent_ollama_requests)
     return payload
 
 

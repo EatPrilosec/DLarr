@@ -109,4 +109,10 @@ export const api = {
     if (!res.ok) throw new Error('Failed to fetch job');
     return res.json();
   },
+
+  async cancelJob(id: number): Promise<{ success: boolean; message: string }> {
+    const res = await fetch(`${API_BASE}/jobs/${id}/cancel`, { method: 'POST' });
+    if (!res.ok) throw new Error('Failed to cancel job');
+    return res.json();
+  },
 };

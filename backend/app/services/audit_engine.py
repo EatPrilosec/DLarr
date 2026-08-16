@@ -74,6 +74,11 @@ class AuditEngine:
         )
 
         for season_num, eps in sorted(seasons.items()):
+            from backend.app.services.concurrency_manager import concurrency_manager
+            if job and concurrency_manager.is_cancelled(job.id):
+                await log(f"[JOB CANCELLED] Audit cancelled by user at Season {season_num}.")
+                return {"status": "CANCELLED", "flagged_count": total_flagged, "seasons": audit_results}
+
             # Check for any episodes with low confidence or anomalies
             questionable_eps = []
             for ep in eps:

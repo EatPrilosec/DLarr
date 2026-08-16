@@ -101,6 +101,8 @@ class OllamaClient:
         system_prompt: Optional[str] = None,
         timeout: float = 60.0
     ) -> str:
+        from backend.app.services.concurrency_manager import concurrency_manager
+
         url = base_url.rstrip("/")
         if not url.startswith("http"):
             url = f"http://{url}"
@@ -119,12 +121,13 @@ class OllamaClient:
             }
         }
 
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            response = await client.post(f"{url}/api/chat", json=payload)
-            response.raise_for_status()
-            data = response.json()
-            raw_content = data.get("message", {}).get("content", "")
-            return clean_llm_text(raw_content)
+        async with concurrency_manager.ollama_slot():
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                response = await client.post(f"{url}/api/chat", json=payload)
+                response.raise_for_status()
+                data = response.json()
+                raw_content = data.get("message", {}).get("content", "")
+                return clean_llm_text(raw_content)
 
     @classmethod
     async def query_with_retry_and_fallback(
@@ -169,6 +172,8 @@ class OllamaClient:
         user_prompt: str,
         timeout: float = 60.0
     ) -> Dict[str, Any]:
+        from backend.app.services.concurrency_manager import concurrency_manager
+
         url = base_url.rstrip("/")
         if not url.startswith("http"):
             url = f"http://{url}"
@@ -186,12 +191,13 @@ class OllamaClient:
             }
         }
 
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            response = await client.post(f"{url}/api/chat", json=payload)
-            response.raise_for_status()
-            data = response.json()
-            content = data.get("message", {}).get("content", "")
-            return extract_json_from_llm(content)
+        async with concurrency_manager.ollama_slot():
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                response = await client.post(f"{url}/api/chat", json=payload)
+                response.raise_for_status()
+                data = response.json()
+                content = data.get("message", {}).get("content", "")
+                return extract_json_from_llm(content)
 
     @classmethod
     async def generate_with_fallback(

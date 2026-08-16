@@ -631,6 +631,11 @@ class MatchingEngine:
         current_idx = 0
 
         for ep_id, canonical_ep in episodes_map.items():
+            from backend.app.services.concurrency_manager import concurrency_manager
+            if job and concurrency_manager.is_cancelled(job.id):
+                await log(f"[JOB CANCELLED] Ingestion cancelled by user at episode {current_idx}/{total_eps}.")
+                return show
+
             current_idx += 1
             if job:
                 job.progress = round((current_idx / total_eps) * 80.0, 1)

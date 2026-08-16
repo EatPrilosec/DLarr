@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Activity as ActivityIcon, CheckCircle2, XCircle, Clock, Loader2, RefreshCw, Terminal } from 'lucide-react';
+import { Activity as ActivityIcon, CheckCircle2, XCircle, Clock, Loader2, RefreshCw, Terminal, StopCircle, Ban } from 'lucide-react';
 import { api } from '../services/api';
 import { Job } from '../types';
 
@@ -140,6 +140,12 @@ export const Activity: React.FC<ActivityProps> = ({ activeJobId }) => {
                           <span>Failed</span>
                         </span>
                       )}
+                      {j.status === 'CANCELLED' && (
+                        <span className="text-slate-400 flex items-center space-x-1">
+                          <Ban className="w-3 h-3" />
+                          <span>Cancelled</span>
+                        </span>
+                      )}
                       {j.status === 'PENDING' && (
                         <span className="text-amber-400 flex items-center space-x-1">
                           <Clock className="w-3 h-3" />
@@ -171,17 +177,44 @@ export const Activity: React.FC<ActivityProps> = ({ activeJobId }) => {
                     <span className="px-2 py-0.5 rounded bg-dark-800 text-slate-400 font-mono text-[10px] border border-dark-700">
                       Job #{selectedJob.id}
                     </span>
+                    {selectedJob.status === 'CANCELLED' && (
+                      <span className="px-2 py-0.5 rounded bg-slate-800 text-slate-400 font-bold text-[10px] border border-slate-700">
+                        CANCELLED
+                      </span>
+                    )}
                   </div>
                   <p className="text-xs text-slate-400 mt-0.5">{selectedJob.message}</p>
                 </div>
 
-                <div className="text-right">
-                  <div className="text-xs font-bold text-indigo-400 font-mono">{selectedJob.progress}%</div>
-                  <div className="w-24 h-1.5 rounded-full bg-dark-800 overflow-hidden mt-1">
-                    <div
-                      className="h-full bg-indigo-500 transition-all duration-300"
-                      style={{ width: `${selectedJob.progress}%` }}
-                    />
+                <div className="flex items-center space-x-4">
+                  {(selectedJob.status === 'RUNNING' || selectedJob.status === 'PENDING') && (
+                    <button
+                      onClick={async () => {
+                        if (confirm(`Are you sure you want to cancel Job #${selectedJob.id}?`)) {
+                          try {
+                            await api.cancelJob(selectedJob.id);
+                            loadJobs();
+                          } catch (err) {
+                            console.error('Failed to cancel job:', err);
+                          }
+                        }
+                      }}
+                      className="bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/30 px-3 py-1.5 rounded-xl text-xs font-semibold flex items-center space-x-1.5 transition-colors"
+                      title="Stop / Cancel Job"
+                    >
+                      <StopCircle className="w-3.5 h-3.5" />
+                      <span>Stop Job</span>
+                    </button>
+                  )}
+
+                  <div className="text-right">
+                    <div className="text-xs font-bold text-indigo-400 font-mono">{selectedJob.progress}%</div>
+                    <div className="w-24 h-1.5 rounded-full bg-dark-800 overflow-hidden mt-1">
+                      <div
+                        className="h-full bg-indigo-500 transition-all duration-300"
+                        style={{ width: `${selectedJob.progress}%` }}
+                      />
+                    </div>
                   </div>
                 </div>
               </div>

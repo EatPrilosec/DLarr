@@ -10,6 +10,8 @@ export interface AppSettings {
   subdl_api_key: string;
   opensubtitles_api_key: string;
   opensubtitles_user_agent: string;
+  max_concurrent_jobs?: number;
+  max_concurrent_ollama_requests?: number;
 }
 
 export interface ConnectionTestResponse {

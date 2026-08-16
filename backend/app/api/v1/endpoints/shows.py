@@ -19,60 +19,80 @@ router = APIRouter(prefix="/shows", tags=["shows"])
 
 
 async def run_import_pipeline(show_id: int, sonarr_series_id: int, job_id: int):
-    """Background task to run multi-source ingestion, Ollama matching, and final audit."""
-    async with AsyncSessionLocal() as db:
-        # Load config
-        stmt = select(Setting)
-        res = await db.execute(stmt)
-        settings_map = {r.key: r.value for r in res.scalars().all()}
+    """Background task to run multi-source ingestion, Ollama matching, and final audit with concurrency control."""
+    from backend.app.services.concurrency_manager import concurrency_manager
 
-        # Load job
-        job_stmt = select(Job).where(Job.id == job_id)
-        job_res = await db.execute(job_stmt)
-        job = job_res.scalars().first()
+    concurrency_manager.register_task(job_id, asyncio.current_task())
+    try:
+        async with concurrency_manager.job_slot():
+            if concurrency_manager.is_cancelled(job_id):
+                return
 
-        try:
-            if job:
-                job.status = "RUNNING"
-                job.progress = 5.0
-                job.message = "Initializing multi-source metadata retrieval..."
-                await db.commit()
+            async with AsyncSessionLocal() as db:
+                # Load config
+                stmt = select(Setting)
+                res = await db.execute(stmt)
+                settings_map = {r.key: r.value for r in res.scalars().all()}
 
-            # 1. Matching Engine
-            show = await MatchingEngine.process_show_ingestion(
-                db=db,
-                sonarr_series_id=sonarr_series_id,
-                config=settings_map,
-                job=job
-            )
+                # Load job
+                job_stmt = select(Job).where(Job.id == job_id)
+                job_res = await db.execute(job_stmt)
+                job = job_res.scalars().first()
 
-            # 2. Audit Engine
-            if job:
-                job.progress = 85.0
-                job.message = "Running Ollama full-show consistency audit..."
-                await db.commit()
+                try:
+                    if job:
+                        job.status = "RUNNING"
+                        job.progress = 5.0
+                        job.message = "Initializing multi-source metadata retrieval..."
+                        await db.commit()
 
-            await AuditEngine.audit_show_consistency(
-                db=db,
-                show_id=show.id,
-                config=settings_map,
-                job=job
-            )
+                    # 1. Matching Engine
+                    show = await MatchingEngine.process_show_ingestion(
+                        db=db,
+                        sonarr_series_id=sonarr_series_id,
+                        config=settings_map,
+                        job=job
+                    )
 
-            if job:
-                job.status = "COMPLETED"
-                job.progress = 100.0
-                job.message = "Show ingestion and AI audit completed successfully."
-                job.finished_at = datetime.utcnow()
-                await db.commit()
+                    if concurrency_manager.is_cancelled(job_id):
+                        return
 
-        except Exception as e:
-            if job:
-                job.status = "FAILED"
-                job.message = f"Error during ingestion: {str(e)}"
-                job.logs = (job.logs or "") + f"\n[FATAL ERROR] {str(e)}"
-                job.finished_at = datetime.utcnow()
-                await db.commit()
+                    # 2. Audit Engine
+                    if job:
+                        job.progress = 85.0
+                        job.message = "Running Ollama full-show consistency audit..."
+                        await db.commit()
+
+                    await AuditEngine.audit_show_consistency(
+                        db=db,
+                        show_id=show.id,
+                        config=settings_map,
+                        job=job
+                    )
+
+                    if job and not concurrency_manager.is_cancelled(job_id):
+                        job.status = "COMPLETED"
+                        job.progress = 100.0
+                        job.message = "Show ingestion and AI audit completed successfully."
+                        job.finished_at = datetime.utcnow()
+                        await db.commit()
+
+                except asyncio.CancelledError:
+                    if job:
+                        job.status = "CANCELLED"
+                        job.message = "Job cancelled by user."
+                        job.logs = (job.logs or "") + "\n[JOB CANCELLED] Cancelled."
+                        job.finished_at = datetime.utcnow()
+                        await db.commit()
+                except Exception as e:
+                    if job:
+                        job.status = "FAILED"
+                        job.message = f"Error during ingestion: {str(e)}"
+                        job.logs = (job.logs or "") + f"\n[FATAL ERROR] {str(e)}"
+                        job.finished_at = datetime.utcnow()
+                        await db.commit()
+    finally:
+        concurrency_manager.unregister_task(job_id)
 
 
 @router.get("", response_model=List[ShowRead])

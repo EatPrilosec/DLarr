@@ -13,40 +13,58 @@ router = APIRouter(prefix="/audit", tags=["audit"])
 
 
 async def run_audit_task(show_id: int, job_id: int):
-    async with AsyncSessionLocal() as db:
-        # Load config
-        stmt = select(Setting)
-        res = await db.execute(stmt)
-        settings_map = {r.key: r.value for r in res.scalars().all()}
+    import asyncio
+    from backend.app.services.concurrency_manager import concurrency_manager
 
-        job_stmt = select(Job).where(Job.id == job_id)
-        job_res = await db.execute(job_stmt)
-        job = job_res.scalars().first()
+    concurrency_manager.register_task(job_id, asyncio.current_task())
+    try:
+        async with concurrency_manager.job_slot():
+            if concurrency_manager.is_cancelled(job_id):
+                return
 
-        try:
-            if job:
-                job.status = "RUNNING"
-                job.progress = 20.0
-                job.message = "Running full-show consistency audit..."
-                await db.commit()
+            async with AsyncSessionLocal() as db:
+                # Load config
+                stmt = select(Setting)
+                res = await db.execute(stmt)
+                settings_map = {r.key: r.value for r in res.scalars().all()}
 
-            result = await AuditEngine.audit_show_consistency(
-                db=db,
-                show_id=show_id,
-                config=settings_map,
-                job=job
-            )
+                job_stmt = select(Job).where(Job.id == job_id)
+                job_res = await db.execute(job_stmt)
+                job = job_res.scalars().first()
 
-            if job:
-                job.status = "COMPLETED"
-                job.progress = 100.0
-                job.message = f"Audit completed: {result.get('status')} ({result.get('flagged_count')} flagged)"
-                await db.commit()
-        except Exception as e:
-            if job:
-                job.status = "FAILED"
-                job.message = f"Audit failed: {str(e)}"
-                await db.commit()
+                try:
+                    if job:
+                        job.status = "RUNNING"
+                        job.progress = 20.0
+                        job.message = "Running full-show consistency audit..."
+                        await db.commit()
+
+                    result = await AuditEngine.audit_show_consistency(
+                        db=db,
+                        show_id=show_id,
+                        config=settings_map,
+                        job=job
+                    )
+
+                    if job and not concurrency_manager.is_cancelled(job_id):
+                        job.status = "COMPLETED"
+                        job.progress = 100.0
+                        job.message = f"Audit completed: {result.get('status')} ({result.get('flagged_count')} flagged)"
+                        await db.commit()
+                except asyncio.CancelledError:
+                    if job:
+                        job.status = "CANCELLED"
+                        job.message = "Audit cancelled by user."
+                        job.logs = (job.logs or "") + "\n[JOB CANCELLED] Cancelled."
+                        await db.commit()
+                except Exception as e:
+                    if job:
+                        job.status = "FAILED"
+                        job.message = f"Audit failed: {str(e)}"
+                        job.logs = (job.logs or "") + f"\n[FATAL ERROR] {str(e)}"
+                        await db.commit()
+    finally:
+        concurrency_manager.unregister_task(job_id)
 
 
 @router.post("/{show_id}", response_model=Dict[str, Any])

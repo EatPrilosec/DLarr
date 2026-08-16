@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Save, CheckCircle2, XCircle, Loader2, Sparkles, Server, Film, FileText, AlertCircle, Key } from 'lucide-react';
+import { Save, CheckCircle2, XCircle, Loader2, Sparkles, Server, Film, FileText, AlertCircle, Key, Cpu } from 'lucide-react';
 import { api } from '../services/api';
 import { AppSettings, ConnectionTestResponse } from '../types';
 
@@ -16,6 +16,8 @@ export const Settings: React.FC = () => {
     subdl_api_key: '',
     opensubtitles_api_key: '',
     opensubtitles_user_agent: 'DLarr v0.1',
+    max_concurrent_jobs: 1,
+    max_concurrent_ollama_requests: 1,
   });
 
   const [loading, setLoading] = useState(true);
@@ -169,6 +171,47 @@ export const Settings: React.FC = () => {
                 placeholder="mistral:7b"
                 className="w-full px-3.5 py-2 rounded-xl bg-dark-900 border border-dark-700 text-white text-xs font-mono focus:outline-none focus:border-indigo-500"
               />
+            </div>
+          </div>
+        </div>
+
+        {/* Concurrency & Resource Limits */}
+        <div className="glass-panel rounded-2xl p-6 border border-dark-700">
+          <div className="flex items-center space-x-3 mb-4">
+            <div className="p-2 rounded-xl bg-purple-600/20 text-purple-400 border border-purple-500/30">
+              <Cpu className="w-5 h-5" />
+            </div>
+            <div>
+              <h2 className="text-base font-bold text-white">Concurrency & Resource Limits</h2>
+              <p className="text-xs text-slate-400">Control simultaneous background jobs and concurrent AI Ollama query limits</p>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-xs font-semibold text-slate-300 mb-1.5">Max Concurrent Jobs</label>
+              <input
+                type="number"
+                min="1"
+                max="10"
+                value={settings.max_concurrent_jobs || 1}
+                onChange={e => setSettings({ ...settings, max_concurrent_jobs: Math.max(1, parseInt(e.target.value) || 1) })}
+                className="w-full px-3.5 py-2 rounded-xl bg-dark-900 border border-dark-700 text-white text-xs font-mono focus:outline-none focus:border-indigo-500"
+              />
+              <p className="text-[11px] text-slate-500 mt-1">Simultaneous show import/matching tasks (extra tasks wait in queue).</p>
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-slate-300 mb-1.5">Max Concurrent AI / Ollama Connections</label>
+              <input
+                type="number"
+                min="1"
+                max="10"
+                value={settings.max_concurrent_ollama_requests || 1}
+                onChange={e => setSettings({ ...settings, max_concurrent_ollama_requests: Math.max(1, parseInt(e.target.value) || 1) })}
+                className="w-full px-3.5 py-2 rounded-xl bg-dark-900 border border-dark-700 text-white text-xs font-mono focus:outline-none focus:border-indigo-500"
+              />
+              <p className="text-[11px] text-slate-500 mt-1">Prevents overloading local GPU / VRAM by throttling parallel prompts.</p>
             </div>
           </div>
         </div>

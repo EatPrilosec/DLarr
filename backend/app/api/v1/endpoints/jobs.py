@@ -29,6 +29,33 @@ async def get_job(job_id: int, db: AsyncSession = Depends(get_db)):
     return job
 
 
+@router.post("/{job_id}/cancel")
+async def cancel_job(job_id: int, db: AsyncSession = Depends(get_db)):
+    from datetime import datetime
+    from backend.app.services.concurrency_manager import concurrency_manager
+
+    stmt = select(Job).where(Job.id == job_id)
+    res = await db.execute(stmt)
+    job = res.scalars().first()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    if job.status in ("COMPLETED", "FAILED", "CANCELLED"):
+        return {"success": False, "message": f"Job is already in {job.status} state."}
+
+    # Signal cancellation in concurrency manager
+    concurrency_manager.cancel_job(job_id)
+
+    # Update job record in database
+    job.status = "CANCELLED"
+    job.message = "Job cancelled by user."
+    job.logs = (job.logs or "") + "\n[JOB CANCELLED] Cancelled by user."
+    job.finished_at = datetime.utcnow()
+    await db.commit()
+
+    return {"success": True, "message": f"Job #{job_id} cancelled."}
+
+
 @router.get("/{job_id}/stream")
 async def stream_job_progress(job_id: int):
     """Server-Sent Events (SSE) endpoint to stream live logs and progress to the WebUI."""

@@ -28,6 +28,10 @@ class AppSettings(BaseModel):
     opensubtitles_api_key: str = ""
     opensubtitles_user_agent: str = "DLarr v0.1"
 
+    # Concurrency & Resource Limits
+    max_concurrent_jobs: int = 1
+    max_concurrent_ollama_requests: int = 1
+
 
 class ConnectionTestRequest(BaseModel):
     service: str  # ollama, sonarr, tmdb, tvmaze, omdb, subdl, opensubtitles
