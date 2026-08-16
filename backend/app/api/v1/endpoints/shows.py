@@ -210,11 +210,15 @@ async def get_show_detail(show_id: int, db: AsyncSession = Depends(get_db)):
 
 @router.delete("/{show_id}")
 async def delete_show(show_id: int, db: AsyncSession = Depends(get_db)):
+    from sqlalchemy import delete
     stmt = select(Show).where(Show.id == show_id)
     res = await db.execute(stmt)
     show = res.scalars().first()
     if not show:
         raise HTTPException(status_code=404, detail="Show not found")
+
+    await db.execute(delete(EpisodeSourceMetadata).where(EpisodeSourceMetadata.show_id == show_id))
+    await db.execute(delete(Episode).where(Episode.show_id == show_id))
     await db.delete(show)
     await db.commit()
     return {"success": True, "message": f"Show '{show.title}' deleted"}

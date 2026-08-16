@@ -487,7 +487,7 @@ class MatchingEngine:
         episodes_map: Dict[int, Episode] = {}
         for ep_data in episodes_data:
             s_ep_id = ep_data.get("id")
-            stmt_ep = select(Episode).where(Episode.sonarr_episode_id == s_ep_id)
+            stmt_ep = select(Episode).where(Episode.show_id == show.id, Episode.sonarr_episode_id == s_ep_id)
             res_ep = await db.execute(stmt_ep)
             ep = res_ep.scalars().first()
             if not ep:
