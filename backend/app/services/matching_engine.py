@@ -511,7 +511,8 @@ class MatchingEngine:
         batch_size: int = 10,
         progress_range: Tuple[float, float] = (0.0, 100.0),
         progress_cb: Optional[Callable[[float, str], Awaitable[None]]] = None,
-        log_cb: Optional[Callable[[str], Awaitable[None]]] = None
+        log_cb: Optional[Callable[[str], Awaitable[None]]] = None,
+        job_id: Optional[int] = None
     ):
         """
         Executes Step 0, Step 1A, Step 1B, Step 2A, Step 2B, Step 2C for a single source with granular progress updates and configurable batch size.
@@ -522,15 +523,22 @@ class MatchingEngine:
         batch_size = max(1, batch_size)
 
         async def log(msg: str):
+            if job_id and concurrency_manager.is_cancelled(job_id):
+                raise asyncio.CancelledError()
             if log_cb:
                 await log_cb(msg)
 
         async def update_progress(fraction: float, msg: str):
+            if job_id and concurrency_manager.is_cancelled(job_id):
+                raise asyncio.CancelledError()
             pct = round(p_start + fraction * (p_end - p_start), 1)
             if progress_cb:
                 await progress_cb(pct, msg)
             if log_cb:
                 await log_cb(f"[{source_name} ({pct}%)] {msg}")
+
+        if job_id and concurrency_manager.is_cancelled(job_id):
+            raise asyncio.CancelledError()
 
         if not source_episodes:
             await log(f"[{source_name}] No external episodes available in source index.")
@@ -551,6 +559,9 @@ class MatchingEngine:
         mapped_canonical_ids: Set[int] = set()
 
         # Step 0: AI No Match Marking (0% -> 10% of source allocation)
+        if job_id and concurrency_manager.is_cancelled(job_id):
+            raise asyncio.CancelledError()
+
         await update_progress(0.02, f"Step 0: Checking for non-existent episodes ({len(source_episodes)} {source_name} vs {len(canonical_episodes)} Sonarr)...")
         no_match_pairs = await cls.ai_step0_detect_no_match(
             ollama_url=ollama_url,
@@ -588,6 +599,9 @@ class MatchingEngine:
         await update_progress(0.10, f"Step 0 Complete: {len(no_match_pairs)} episodes marked NO_MATCH.")
 
         # Step 1A: Strict 1:1 Title Matching (10% -> 40% of source allocation)
+        if job_id and concurrency_manager.is_cancelled(job_id):
+            raise asyncio.CancelledError()
+
         await update_progress(0.12, "Step 1A: Scanning entire source index for 1:1 exact title matches...")
         source_by_strict_title: Dict[str, List[Dict[str, Any]]] = {}
         for cand in source_episodes:
@@ -616,6 +630,9 @@ class MatchingEngine:
         await log(f"[{source_name}] Step 1A: Found {len(proposed_1a)} strict 1:1 candidates. Confirming in {total_1a_batches} batches of {batch_size}...")
 
         for b_idx, i in enumerate(range(0, len(proposed_1a), batch_size), 1):
+            if job_id and concurrency_manager.is_cancelled(job_id):
+                raise asyncio.CancelledError()
+
             batch = proposed_1a[i:i+batch_size]
             first_ep = batch[0][0]
             last_ep = batch[-1][0]
@@ -660,6 +677,9 @@ class MatchingEngine:
         await update_progress(0.40, f"Step 1A Complete: {len(mapped_canonical_ids)} strict matches saved.")
 
         # Step 1B: Loose Title Matching (40% -> 60% of source allocation)
+        if job_id and concurrency_manager.is_cancelled(job_id):
+            raise asyncio.CancelledError()
+
         await update_progress(0.42, "Step 1B: Scanning remaining unmapped episodes for loose / parenthetical matches...")
         unmapped_source_eps = [c for c in source_episodes if (c.get("season") or 0, c.get("episode") or 0) not in mapped_source_keys]
         proposed_1b: List[Tuple[Episode, Dict[str, Any]]] = []
@@ -680,6 +700,9 @@ class MatchingEngine:
         await log(f"[{source_name}] Step 1B: Found {len(proposed_1b)} loose candidate matches. Confirming in {total_1b_batches} batches...")
 
         for b_idx, i in enumerate(range(0, len(proposed_1b), batch_size), 1):
+            if job_id and concurrency_manager.is_cancelled(job_id):
+                raise asyncio.CancelledError()
+
             batch = proposed_1b[i:i+batch_size]
             frac = 0.40 + 0.20 * (b_idx / total_1b_batches)
             await update_progress(frac, f"Step 1B: Batch {b_idx}/{total_1b_batches}")
@@ -722,6 +745,9 @@ class MatchingEngine:
         await update_progress(0.60, f"Step 1B Complete: {len(mapped_canonical_ids)} total matches saved.")
 
         # Step 2A & 2B: AI Candidate Search & Batch Confirmation (60% -> 100% of source allocation)
+        if job_id and concurrency_manager.is_cancelled(job_id):
+            raise asyncio.CancelledError()
+
         remaining_unmapped_sonarr = [ep for ep in canonical_episodes if ep.id not in mapped_canonical_ids]
         if remaining_unmapped_sonarr:
             await update_progress(0.62, f"Step 2A: Running LLM candidate search across {len(remaining_unmapped_sonarr)} unmapped episodes...")
@@ -730,6 +756,9 @@ class MatchingEngine:
             proposed_2a: List[Tuple[Episode, Dict[str, Any]]] = []
 
             for ep_idx, ep in enumerate(remaining_unmapped_sonarr, 1):
+                if job_id and concurrency_manager.is_cancelled(job_id):
+                    raise asyncio.CancelledError()
+
                 frac = 0.60 + 0.25 * (ep_idx / len(remaining_unmapped_sonarr))
                 await update_progress(frac, f"Step 2A: Searching ep {ep_idx}/{len(remaining_unmapped_sonarr)}: S{ep.season_number}E{ep.episode_number} '{ep.title}'")
 
@@ -751,10 +780,16 @@ class MatchingEngine:
 
             # Batch confirm Step 2A proposals (Step 2B)
             if proposed_2a:
+                if job_id and concurrency_manager.is_cancelled(job_id):
+                    raise asyncio.CancelledError()
+
                 total_2b_batches = max(1, (len(proposed_2a) + batch_size - 1) // batch_size)
                 await log(f"[{source_name}] Step 2B: Confirming {len(proposed_2a)} search proposals in {total_2b_batches} batches of {batch_size}...")
 
                 for b_idx, i in enumerate(range(0, len(proposed_2a), batch_size), 1):
+                    if job_id and concurrency_manager.is_cancelled(job_id):
+                        raise asyncio.CancelledError()
+
                     batch = proposed_2a[i:i+batch_size]
                     frac = 0.85 + 0.15 * (b_idx / total_2b_batches)
                     await update_progress(frac, f"Step 2B: Confirming search batch {b_idx}/{total_2b_batches}")
@@ -791,12 +826,14 @@ class MatchingEngine:
                             )
                             db.add(meta)
 
-                    await log(f"[{source_name}] Step 2B: Batch {b_idx}/{total_2b_batches} -> AI confirmed {n_conf}/{len(batch)} proposals ({model_used}).")
+                    await log(f"[{source_name}] Step 2B: Batch {b_idx}/{total_2b_batches} -> AI confirmed {n_conf}/{len(batch)} search matches ({model_used}).")
 
                 await db.commit()
 
-        unmapped_final = len(canonical_episodes) - len(mapped_canonical_ids)
-        await update_progress(1.0, f"Completed: {len(mapped_canonical_ids)}/{len(canonical_episodes)} mapped ({unmapped_final} unmapped).")
+        if job_id and concurrency_manager.is_cancelled(job_id):
+            raise asyncio.CancelledError()
+
+        await update_progress(1.0, f"Source '{source_name}' multi-stage matching complete.")
 
     @classmethod
     async def process_show_ingestion(
@@ -818,6 +855,8 @@ class MatchingEngine:
 
         async def log(msg: str):
             if job:
+                if concurrency_manager.is_cancelled(job.id):
+                    raise asyncio.CancelledError("Job cancelled by user")
                 job.logs = (job.logs or "") + f"\n{msg}"
                 try:
                     await db.commit()
@@ -826,6 +865,8 @@ class MatchingEngine:
 
         async def update_job_progress(progress_val: float, message_val: str):
             if job:
+                if concurrency_manager.is_cancelled(job.id):
+                    raise asyncio.CancelledError("Job cancelled by user")
                 job.progress = progress_val
                 job.message = message_val[:250]
                 try:
@@ -1065,7 +1106,8 @@ class MatchingEngine:
                 batch_size=batch_size,
                 progress_range=(s_p_start, s_p_end),
                 progress_cb=update_job_progress,
-                log_cb=log
+                log_cb=log,
+                job_id=job.id if job else None
             )
 
         # 6. Final Status Evaluation (Step 2C)

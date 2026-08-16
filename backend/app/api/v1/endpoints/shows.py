@@ -78,12 +78,17 @@ async def run_import_pipeline(
                         await db.commit()
 
                 except asyncio.CancelledError:
-                    if job:
-                        job.status = "CANCELLED"
-                        job.message = "Job cancelled by user."
-                        job.logs = (job.logs or "") + "\n[JOB CANCELLED] Cancelled."
-                        job.finished_at = datetime.utcnow()
-                        await db.commit()
+                    try:
+                        res_c = await db.execute(select(Job).where(Job.id == job_id))
+                        c_job = res_c.scalars().first()
+                        if c_job:
+                            c_job.status = "CANCELLED"
+                            c_job.message = "Job cancelled by user."
+                            c_job.logs = (c_job.logs or "") + "\n[JOB CANCELLED] Cancelled by user."
+                            c_job.finished_at = datetime.utcnow()
+                            await db.commit()
+                    except Exception:
+                        pass
                 except Exception as e:
                     if job:
                         job.status = "FAILED"

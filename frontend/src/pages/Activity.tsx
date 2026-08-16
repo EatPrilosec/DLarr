@@ -241,10 +241,13 @@ export const Activity: React.FC<ActivityProps> = ({ activeJobId }) => {
                       onClick={async () => {
                         if (confirm(`Are you sure you want to cancel Job #${selectedJob.id}?`)) {
                           try {
+                            setSelectedJob(prev => prev ? { ...prev, status: 'CANCELLED', message: 'Job cancelled by user.' } : null);
+                            setJobs(prev => prev.map(j => j.id === selectedJob.id ? { ...j, status: 'CANCELLED', message: 'Job cancelled by user.' } : j));
                             await api.cancelJob(selectedJob.id);
                             loadJobs();
                           } catch (err) {
                             console.error('Failed to cancel job:', err);
+                            loadJobs();
                           }
                         }
                       }}
