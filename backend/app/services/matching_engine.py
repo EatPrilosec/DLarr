@@ -334,42 +334,42 @@ class MatchingEngine:
         fallback_model: Optional[str]
     ) -> Tuple[Optional[Dict[str, Any]], bool]:
         """
-        Executes the 2-attempt Confirmation -> Search -> Verify loop.
+        Executes the AI Confirmation -> Search -> Verify decision pipeline.
         Returns: (matched_variation_dict_or_None, requires_user_intervention: bool)
         """
         if not source_index.episodes:
             return None, False
 
-        for attempt in range(1, 3):
-            # 1. Propose candidate using traditional methods (fuzzy / alias / indexing)
-            candidate = source_index.propose_candidate(canonical_ep)
+        # 1. Propose candidate using traditional methods (fuzzy / alias / indexing)
+        candidate = source_index.propose_candidate(canonical_ep)
 
-            if candidate:
-                is_match, model_used = await cls.ai_confirm_match(
-                    ollama_url=ollama_url,
-                    primary_model=primary_model,
-                    fallback_model=fallback_model,
-                    show_title=show_title,
-                    canonical_ep=canonical_ep,
-                    candidate=candidate,
-                    source_name=source_index.source_name
-                )
-                if is_match:
-                    return {
-                        "id": str(candidate.get("id")),
-                        "season": candidate.get("season"),
-                        "episode": candidate.get("episode"),
-                        "title": candidate.get("title"),
-                        "overview": candidate.get("overview"),
-                        "air_date": candidate.get("air_date"),
-                        "method": "AI_CONFIRMED_MATCH",
-                        "confidence": 1.0,
-                        "model_used": model_used,
-                        "raw": candidate.get("raw", candidate)
-                    }, False
+        if candidate:
+            is_match, model_used = await cls.ai_confirm_match(
+                ollama_url=ollama_url,
+                primary_model=primary_model,
+                fallback_model=fallback_model,
+                show_title=show_title,
+                canonical_ep=canonical_ep,
+                candidate=candidate,
+                source_name=source_index.source_name
+            )
+            if is_match:
+                return {
+                    "id": str(candidate.get("id")),
+                    "season": candidate.get("season"),
+                    "episode": candidate.get("episode"),
+                    "title": candidate.get("title"),
+                    "overview": candidate.get("overview"),
+                    "air_date": candidate.get("air_date"),
+                    "method": "AI_CONFIRMED_MATCH",
+                    "confidence": 1.0,
+                    "model_used": model_used,
+                    "raw": candidate.get("raw", candidate)
+                }, False
 
-            # 2. If confirmation failed or no candidate, run Candidate List Search
-            cands_pool = source_index.get_search_pool(canonical_ep.season_number)
+        # 2. If confirmation failed or no candidate, run Candidate List Search
+        cands_pool = source_index.get_search_pool(canonical_ep.season_number)
+        if cands_pool:
             se_result, model_used = await cls.ai_search_candidates(
                 ollama_url=ollama_url,
                 primary_model=primary_model,
@@ -408,7 +408,7 @@ class MatchingEngine:
                             "raw": chosen.get("raw", chosen)
                         }, False
 
-        # After 2 failed attempts, mark as requiring user intervention
+        # After search fails, mark as requiring user intervention
         return None, True
 
     @classmethod
