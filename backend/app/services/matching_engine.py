@@ -164,7 +164,10 @@ class SourceIndex:
         return None
 
     def get_search_pool(self, season_number: int) -> List[Dict[str, Any]]:
-        """Returns candidate pool for searching (same season + adjacent seasons, or all if short)."""
+        """Returns candidate pool for searching."""
+        if season_number == 0:
+            return self.by_season.get(0, [])
+
         if len(self.episodes) <= 40:
             return self.episodes
 
@@ -172,7 +175,7 @@ class SourceIndex:
         pool.extend(self.by_season.get(season_number, []))
         for offset in [-1, 1, -2, 2]:
             adj_season = season_number + offset
-            if adj_season >= 0:
+            if adj_season > 0:
                 pool.extend(self.by_season.get(adj_season, []))
 
         if not pool:
@@ -640,11 +643,10 @@ class MatchingEngine:
             if job:
                 job.progress = round((current_idx / total_eps) * 80.0, 1)
                 job.message = f"Matching episode {current_idx}/{total_eps}: S{canonical_ep.season_number}E{canonical_ep.episode_number} - {canonical_ep.title}"
-                if current_idx % 10 == 0 or current_idx == total_eps:
-                    try:
-                        await db.commit()
-                    except Exception:
-                        pass
+                try:
+                    await db.commit()
+                except Exception:
+                    pass
 
             ep_sources_matched = 0
             ep_requires_intervention = False
