@@ -2,7 +2,14 @@ import pytest
 from unittest.mock import patch
 from backend.app.core.database import AsyncSessionLocal
 from backend.app.models.show import Show, Episode, EpisodeSourceMetadata
-from backend.app.services.matching_engine import normalize_title, token_sorted_title, is_title_match
+from backend.app.services.matching_engine import (
+    normalize_title,
+    token_sorted_title,
+    extract_title_aliases,
+    is_title_match,
+    SourceIndex,
+    MatchingEngine
+)
 from backend.app.services.ollama_client import OllamaClient
 from backend.app.services.audit_engine import AuditEngine
 
@@ -11,6 +18,17 @@ def test_normalize_title():
     assert normalize_title("The Walking Dead: Season 1!") == "the walking dead season 1"
     assert normalize_title("Doctor Who (2005)") == "doctor who 2005"
     assert normalize_title(None) == ""
+
+
+def test_extract_title_aliases():
+    aliases = extract_title_aliases("Racing The Storm (American Airlines, Flight 1420)")
+    assert "Racing The Storm (American Airlines, Flight 1420)" in aliases
+    assert "Racing The Storm" in aliases
+    assert "American Airlines, Flight 1420" in aliases
+
+    match, method, conf = is_title_match("Racing The Storm (American Airlines, Flight 1420)", "Racing the Storm")
+    assert match is True
+    assert method == "EXACT_TITLE"
 
 
 def test_token_sorted_and_fuzzy_title_match():
@@ -31,24 +49,67 @@ def test_token_sorted_and_fuzzy_title_match():
 
 
 @pytest.mark.asyncio
-async def test_ollama_fallback_routing():
-    async def mock_query(base_url, model, system_prompt, user_prompt, timeout=60.0):
-        if model == "primary:8b":
-            raise TimeoutError("Primary model timed out")
-        elif model == "fallback:7b":
-            return {"matched_candidate_id": "cand_1", "is_match": True, "confidence": 95}
-        raise ValueError(f"Unexpected model: {model}")
+async def test_ollama_2try_fallback_execution():
+    call_counts = {"primary": 0, "fallback": 0}
 
-    with patch.object(OllamaClient, "query_model_structured", side_effect=mock_query):
-        result, model_used = await OllamaClient.generate_with_fallback(
+    async def mock_query(base_url, model, user_prompt, system_prompt=None, timeout=60.0):
+        if model == "primary:8b":
+            call_counts["primary"] += 1
+            if call_counts["primary"] == 1:
+                return ""  # Blank on try 1
+            return "no"   # Non-match on retry 2
+        elif model == "fallback:7b":
+            call_counts["fallback"] += 1
+            return "yes"  # Matches on fallback
+        return ""
+
+    def is_yes(text: str) -> bool:
+        return text.strip().lower().startswith("yes")
+
+    with patch.object(OllamaClient, "query_model_text", side_effect=mock_query):
+        res, is_valid, model_used = await OllamaClient.execute_prompt_with_2try_fallback(
             base_url="http://localhost:11434",
             primary_model="primary:8b",
             fallback_model="fallback:7b",
-            system_prompt="Test system",
-            user_prompt="Test user"
+            user_prompt="test prompt",
+            validator_fn=is_yes
         )
-        assert result["matched_candidate_id"] == "cand_1"
+        assert is_valid is True
         assert model_used == "fallback:7b"
+        assert call_counts["primary"] == 2
+        assert call_counts["fallback"] == 1
+
+
+@pytest.mark.asyncio
+async def test_ai_search_candidates_parsing():
+    async def mock_query(base_url, model, user_prompt, system_prompt=None, timeout=60.0):
+        return "The matching episode is S01E02."
+
+    ep = Episode(
+        id=1,
+        season_number=1,
+        episode_number=1,
+        title="Racing The Storm (American Airlines, Flight 1420)",
+        overview="Flight 1420 crashes in storm",
+        air_date="2003-09-03"
+    )
+
+    candidates = [
+        {"season": 1, "episode": 1, "title": "Unlocking Disaster", "overview": "United 811", "air_date": "2003-09-03"},
+        {"season": 1, "episode": 2, "title": "Racing the Storm", "overview": "Flight 1420", "air_date": "2003-09-10"}
+    ]
+
+    with patch.object(OllamaClient, "query_model_text", side_effect=mock_query):
+        se_match, model_used = await MatchingEngine.ai_search_candidates(
+            ollama_url="http://localhost:11434",
+            primary_model="primary:8b",
+            fallback_model="fallback:7b",
+            show_title="Mayday",
+            canonical_ep=ep,
+            candidates=candidates,
+            source_name="TVmaze"
+        )
+        assert se_match == (1, 2)
 
 
 @pytest.mark.asyncio

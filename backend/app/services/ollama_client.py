@@ -1,23 +1,31 @@
 import json
 import re
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Dict, Any, List, Optional, Tuple, Callable
 import httpx
+
+
+def clean_llm_text(content: str) -> str:
+    """Strips thinking tags, markdown wrappers, and normalizes text from LLM response."""
+    if not content:
+        return ""
+    # Strip thinking tags <think>...</think>
+    cleaned = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL | re.IGNORECASE).strip()
+    return cleaned
 
 
 def extract_json_from_llm(content: str) -> Any:
     if not content:
         raise ValueError("Empty LLM response content")
 
-    # 1. Strip thinking tags <think>...</think>
-    cleaned = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL | re.IGNORECASE).strip()
+    cleaned = clean_llm_text(content)
 
-    # 2. Try direct parse
+    # 1. Try direct parse
     try:
         return json.loads(cleaned)
     except Exception:
         pass
 
-    # 3. Strip markdown code fences ```json ... ```
+    # 2. Strip markdown code fences ```json ... ```
     match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", cleaned, re.IGNORECASE)
     if match:
         try:
@@ -25,7 +33,7 @@ def extract_json_from_llm(content: str) -> Any:
         except Exception:
             pass
 
-    # 4. Find outermost { ... }
+    # 3. Find outermost { ... }
     first_brace = cleaned.find("{")
     last_brace = cleaned.rfind("}")
     if first_brace != -1 and last_brace != -1 and last_brace > first_brace:
@@ -34,7 +42,7 @@ def extract_json_from_llm(content: str) -> Any:
         except Exception:
             pass
 
-    # 5. Find outermost [ ... ]
+    # 4. Find outermost [ ... ]
     first_bracket = cleaned.find("[")
     last_bracket = cleaned.rfind("]")
     if first_bracket != -1 and last_bracket != -1 and last_bracket > first_bracket:
@@ -84,6 +92,85 @@ class OllamaClient:
             except Exception:
                 pass
         return []
+
+    @staticmethod
+    async def query_model_text(
+        base_url: str,
+        model: str,
+        user_prompt: str,
+        system_prompt: Optional[str] = None,
+        timeout: float = 60.0
+    ) -> str:
+        url = base_url.rstrip("/")
+        if not url.startswith("http"):
+            url = f"http://{url}"
+
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": user_prompt})
+
+        payload = {
+            "model": model,
+            "messages": messages,
+            "stream": False,
+            "options": {
+                "temperature": 0.1
+            }
+        }
+
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.post(f"{url}/api/chat", json=payload)
+            response.raise_for_status()
+            data = response.json()
+            raw_content = data.get("message", {}).get("content", "")
+            return clean_llm_text(raw_content)
+
+    @classmethod
+    async def execute_prompt_with_2try_fallback(
+        cls,
+        base_url: str,
+        primary_model: str,
+        fallback_model: Optional[str],
+        user_prompt: str,
+        validator_fn: Callable[[str], bool],
+        system_prompt: Optional[str] = None
+    ) -> Tuple[str, bool, str]:
+        """
+        Executes prompt with 2 tries per model:
+        1. Primary Model Try 1 -> if validator_fn(res) is True, return (res, True, primary_model)
+        2. Primary Model Try 2 -> if validator_fn(res) is True, return (res, True, primary_model)
+        3. Fallback Model Try 1 -> if validator_fn(res) is True, return (res, True, fallback_model)
+        4. Fallback Model Try 2 -> if validator_fn(res) is True, return (res, True, fallback_model)
+        Returns: (last_response_text, is_valid, model_used)
+        """
+        last_res = ""
+        last_model = primary_model
+
+        # 1. Primary Model (up to 2 tries)
+        for _ in range(2):
+            try:
+                res = await cls.query_model_text(base_url, primary_model, user_prompt, system_prompt)
+                last_res = res
+                last_model = primary_model
+                if validator_fn(res):
+                    return res, True, primary_model
+            except Exception:
+                pass
+
+        # 2. Fallback Model (up to 2 tries)
+        if fallback_model and fallback_model != primary_model:
+            for _ in range(2):
+                try:
+                    res = await cls.query_model_text(base_url, fallback_model, user_prompt, system_prompt)
+                    last_res = res
+                    last_model = fallback_model
+                    if validator_fn(res):
+                        return res, True, fallback_model
+                except Exception:
+                    pass
+
+        return last_res, False, last_model
 
     @staticmethod
     async def query_model_structured(
@@ -150,8 +237,6 @@ class OllamaClient:
                     )
                     return result, fallback_model
                 except Exception as fallback_error:
-                    raise RuntimeError(
-                        f"Both primary ({primary_model}) and fallback ({fallback_model}) failed: "
-                        f"Primary: {str(primary_error)}, Fallback: {str(fallback_error)}"
-                    )
+                    raise RuntimeError(f"Both primary ({primary_model}) and fallback ({fallback_model}) failed: "
+                                       f"Primary: {str(primary_error)}, Fallback: {str(fallback_error)}")
             raise primary_error
