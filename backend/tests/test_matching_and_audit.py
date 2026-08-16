@@ -49,7 +49,7 @@ def test_token_sorted_and_fuzzy_title_match():
 
 
 @pytest.mark.asyncio
-async def test_ollama_2try_fallback_execution():
+async def test_ollama_retry_fallback_execution():
     call_counts = {"primary": 0, "fallback": 0}
 
     async def mock_query(base_url, model, user_prompt, system_prompt=None, timeout=60.0):
@@ -57,24 +57,20 @@ async def test_ollama_2try_fallback_execution():
             call_counts["primary"] += 1
             if call_counts["primary"] == 1:
                 return ""  # Blank on try 1
-            return "no"   # Non-match on retry 2
+            raise RuntimeError("Error on retry 2")
         elif model == "fallback:7b":
             call_counts["fallback"] += 1
             return "yes"  # Matches on fallback
         return ""
 
-    def is_yes(text: str) -> bool:
-        return text.strip().lower().startswith("yes")
-
     with patch.object(OllamaClient, "query_model_text", side_effect=mock_query):
-        res, is_valid, model_used = await OllamaClient.execute_prompt_with_2try_fallback(
+        res, model_used = await OllamaClient.query_with_retry_and_fallback(
             base_url="http://localhost:11434",
             primary_model="primary:8b",
             fallback_model="fallback:7b",
-            user_prompt="test prompt",
-            validator_fn=is_yes
+            user_prompt="test prompt"
         )
-        assert is_valid is True
+        assert res == "yes"
         assert model_used == "fallback:7b"
         assert call_counts["primary"] == 2
         assert call_counts["fallback"] == 1

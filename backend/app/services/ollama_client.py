@@ -127,50 +127,39 @@ class OllamaClient:
             return clean_llm_text(raw_content)
 
     @classmethod
-    async def execute_prompt_with_2try_fallback(
+    async def query_with_retry_and_fallback(
         cls,
         base_url: str,
         primary_model: str,
         fallback_model: Optional[str],
         user_prompt: str,
-        validator_fn: Callable[[str], bool],
         system_prompt: Optional[str] = None
-    ) -> Tuple[str, bool, str]:
+    ) -> Tuple[str, str]:
         """
-        Executes prompt with 2 tries per model:
-        1. Primary Model Try 1 -> if validator_fn(res) is True, return (res, True, primary_model)
-        2. Primary Model Try 2 -> if validator_fn(res) is True, return (res, True, primary_model)
-        3. Fallback Model Try 1 -> if validator_fn(res) is True, return (res, True, fallback_model)
-        4. Fallback Model Try 2 -> if validator_fn(res) is True, return (res, True, fallback_model)
-        Returns: (last_response_text, is_valid, model_used)
+        Executes query against primary_model with up to 2 attempts (retrying if blank or error).
+        If still blank or error, attempts fallback_model (with up to 2 attempts).
+        Returns: (response_text, model_used)
         """
-        last_res = ""
-        last_model = primary_model
-
-        # 1. Primary Model (up to 2 tries)
+        # 1. Primary Model (up to 2 attempts)
         for _ in range(2):
             try:
                 res = await cls.query_model_text(base_url, primary_model, user_prompt, system_prompt)
-                last_res = res
-                last_model = primary_model
-                if validator_fn(res):
-                    return res, True, primary_model
+                if res.strip():
+                    return res.strip(), primary_model
             except Exception:
                 pass
 
-        # 2. Fallback Model (up to 2 tries)
+        # 2. Fallback Model (up to 2 attempts)
         if fallback_model and fallback_model != primary_model:
             for _ in range(2):
                 try:
                     res = await cls.query_model_text(base_url, fallback_model, user_prompt, system_prompt)
-                    last_res = res
-                    last_model = fallback_model
-                    if validator_fn(res):
-                        return res, True, fallback_model
+                    if res.strip():
+                        return res.strip(), fallback_model
                 except Exception:
                     pass
 
-        return last_res, False, last_model
+        return "", primary_model
 
     @staticmethod
     async def query_model_structured(

@@ -237,20 +237,17 @@ class MatchingEngine:
             "Please answer in the form of one word: yes or no."
         )
 
-        def is_yes_validator(text: str) -> bool:
-            clean = text.strip().lower()
-            return clean.startswith("yes") or "yes" in clean.split() or clean == "true"
-
-        resp_text, is_valid, model_used = await OllamaClient.execute_prompt_with_2try_fallback(
+        resp_text, model_used = await OllamaClient.query_with_retry_and_fallback(
             base_url=ollama_url,
             primary_model=primary_model,
             fallback_model=fallback_model,
             user_prompt=prompt,
-            validator_fn=is_yes_validator,
             system_prompt=system_prompt
         )
 
-        return is_valid, model_used
+        clean = resp_text.strip().lower()
+        is_yes = clean.startswith("yes") or "yes" in clean.split() or clean == "true"
+        return is_yes, model_used
 
     @staticmethod
     async def ai_search_candidates(
@@ -310,24 +307,19 @@ class MatchingEngine:
             "If none matches, answer NONE."
         )
 
-        def has_valid_se_validator(text: str) -> bool:
-            return bool(re.search(r"S(\d+)E(\d+)", text, re.IGNORECASE))
-
-        resp_text, is_valid, model_used = await OllamaClient.execute_prompt_with_2try_fallback(
+        resp_text, model_used = await OllamaClient.query_with_retry_and_fallback(
             base_url=ollama_url,
             primary_model=primary_model,
             fallback_model=fallback_model,
             user_prompt=prompt,
-            validator_fn=has_valid_se_validator,
             system_prompt=system_prompt
         )
 
-        if is_valid:
-            match = re.search(r"S(\d+)E(\d+)", resp_text, re.IGNORECASE)
-            if match:
-                s_num = int(match.group(1))
-                e_num = int(match.group(2))
-                return (s_num, e_num), model_used
+        match = re.search(r"S(\d+)E(\d+)", resp_text, re.IGNORECASE)
+        if match:
+            s_num = int(match.group(1))
+            e_num = int(match.group(2))
+            return (s_num, e_num), model_used
 
         return None, model_used
 
