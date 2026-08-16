@@ -26,6 +26,23 @@ class ShowCreate(BaseModel):
     sonarr_series_id: int
 
 
+class ShowImportRequest(BaseModel):
+    sonarr_series_id: int
+    scan_mode: Optional[str] = "full"  # "full", "none", "custom"
+    sources: Optional[List[str]] = ["tmdb", "tvmaze", "omdb"]
+
+
+class ShowRescanRequest(BaseModel):
+    scan_mode: Optional[str] = "full"  # "full", "custom"
+    sources: Optional[List[str]] = ["tmdb", "tvmaze", "omdb"]
+    season_number: Optional[int] = None
+    episode_id: Optional[int] = None
+
+
+class EpisodeRescanRequest(BaseModel):
+    sources: Optional[List[str]] = ["tmdb", "tvmaze", "omdb"]
+
+
 class ShowRead(ShowBase):
     id: int
     last_audited_at: Optional[datetime] = None

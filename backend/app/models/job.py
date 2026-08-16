@@ -13,6 +13,7 @@ class Job(Base):
     progress = Column(Float, default=0.0)  # 0.0 to 100.0
     message = Column(String(255), nullable=True)
     logs = Column(Text, nullable=True)  # Detailed log lines
+    payload = Column(Text, nullable=True)  # Serialized JSON execution parameters for restart/resume
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     finished_at = Column(DateTime, nullable=True)

@@ -1,6 +1,6 @@
 import asyncio
 from typing import List
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -76,6 +76,61 @@ async def cancel_all_jobs(db: AsyncSession = Depends(get_db)):
 
     await db.commit()
     return {"success": True, "message": f"Cancelled {count} active jobs.", "cancelled_count": count}
+
+
+@router.post("/{job_id}/restart")
+async def restart_job(
+    job_id: int,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db)
+):
+    """Restarts a cancelled or failed job using its stored parameters."""
+    import json
+    from backend.app.api.v1.endpoints.shows import run_import_pipeline
+
+    stmt = select(Job).where(Job.id == job_id)
+    res = await db.execute(stmt)
+    job = res.scalars().first()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    params = {}
+    if job.payload:
+        try:
+            params = json.loads(job.payload)
+        except Exception:
+            pass
+
+    sonarr_series_id = params.get("sonarr_series_id")
+    if not sonarr_series_id and job.show_id:
+        from backend.app.models.show import Show
+        res_show = await db.execute(select(Show).where(Show.id == job.show_id))
+        sh = res_show.scalars().first()
+        if sh:
+            sonarr_series_id = sh.sonarr_series_id
+
+    if not sonarr_series_id:
+        raise HTTPException(status_code=400, detail="Cannot restart job: missing Sonarr series ID in parameters.")
+
+    job.status = "PENDING"
+    job.progress = 0.0
+    job.message = "Job restarted by user. Queued for execution..."
+    job.logs = (job.logs or "") + "\n[JOB RESTARTED] Restarted by user."
+    job.finished_at = None
+    await db.commit()
+
+    background_tasks.add_task(
+        run_import_pipeline,
+        show_id=params.get("show_id", job.show_id or 0),
+        sonarr_series_id=sonarr_series_id,
+        job_id=job.id,
+        scan_mode=params.get("scan_mode", "full"),
+        sources=params.get("sources", ["tmdb", "tvmaze", "omdb"]),
+        season_number=params.get("season_number"),
+        episode_id=params.get("episode_id")
+    )
+
+    return {"success": True, "message": f"Job #{job_id} restarted.", "job_id": job.id}
 
 
 @router.get("/{job_id}/stream")

@@ -107,17 +107,19 @@ async def test_step2_ai_search_candidates():
 
 @pytest.mark.asyncio
 async def test_manual_match_and_mark_no_match_api():
+    import random
+    s_id = random.randint(100000, 999999)
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
         # Seed an episode in DB
         async with AsyncSessionLocal() as db:
-            show = Show(sonarr_series_id=9876, title="Test Audit Show")
+            show = Show(sonarr_series_id=s_id, title="Test Audit Show")
             db.add(show)
             await db.flush()
 
             ep = Episode(
                 show_id=show.id,
-                sonarr_episode_id=98761,
+                sonarr_episode_id=s_id * 10,
                 season_number=1,
                 episode_number=1,
                 title="Pilot"

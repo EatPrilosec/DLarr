@@ -46,3 +46,18 @@ async def init_db() -> None:
         import backend.app.models.setting  # noqa: F401
         import backend.app.models.job  # noqa: F401
         await conn.run_sync(Base.metadata.create_all)
+
+        # Automatic SQLite schema migration for columns added over time
+        def migrate_schema(sync_conn):
+            cursor = sync_conn.connection.cursor()
+            try:
+                cursor.execute("PRAGMA table_info(jobs)")
+                cols = [row[1] for row in cursor.fetchall()]
+                if "payload" not in cols:
+                    cursor.execute("ALTER TABLE jobs ADD COLUMN payload TEXT")
+            except Exception:
+                pass
+            finally:
+                cursor.close()
+
+        await conn.run_sync(migrate_schema)

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { ArrowLeft, Sparkles, ShieldCheck, RefreshCw, FileText, ChevronDown, ChevronRight, Layers, Check, AlertCircle, Edit3, Ban, X } from 'lucide-react';
+import { ArrowLeft, RefreshCw, FileText, ChevronDown, ChevronRight, Layers, Check, AlertCircle, Edit3, Ban, X, Settings2, Sparkles } from 'lucide-react';
 import { api } from '../services/api';
 import { Show, Episode, EpisodeSourceMetadata } from '../types';
 import { StatusBadge } from '../components/StatusBadge';
@@ -10,14 +10,27 @@ interface ShowDetailProps {
   onJobStarted: (jobId: number) => void;
 }
 
+interface RescanModalState {
+  targetType: 'show' | 'season' | 'episode';
+  seasonNumber?: number;
+  episodeId?: number;
+  episodeTitle?: string;
+}
+
 export const ShowDetail: React.FC<ShowDetailProps> = ({ showId, onBack, onJobStarted }) => {
   const [show, setShow] = useState<Show | null>(null);
   const [loading, setLoading] = useState(true);
   const [selectedSeason, setSelectedSeason] = useState<number | null>(null);
   const [expandedEpisodeId, setExpandedEpisodeId] = useState<number | null>(null);
-  const [transcriptModal, setTranscriptModal] = useState<{ title: string; content: string } | null>(null);
   const [manualMatchModal, setManualMatchModal] = useState<{ episode: Episode; source: string; season: number; episode_num: number; title: string } | null>(null);
-  const [auditing, setAuditing] = useState(false);
+  const [rescanModal, setRescanModal] = useState<RescanModalState | null>(null);
+  const [rescanMode, setRescanMode] = useState<'full' | 'custom'>('full');
+  const [rescanSources, setRescanSources] = useState<{ [key: string]: boolean }>({
+    tmdb: true,
+    tvmaze: true,
+    omdb: true,
+  });
+  const [submittingRescan, setSubmittingRescan] = useState(false);
 
   useEffect(() => {
     loadShowDetail();
@@ -29,7 +42,6 @@ export const ShowDetail: React.FC<ShowDetailProps> = ({ showId, onBack, onJobSta
       const data = await api.getShow(showId);
       setShow(data);
       if (data.episodes && data.episodes.length > 0 && selectedSeason === null) {
-        // Default to first season in list
         setSelectedSeason(data.episodes[0].season_number);
       }
     } catch (err) {
@@ -39,16 +51,42 @@ export const ShowDetail: React.FC<ShowDetailProps> = ({ showId, onBack, onJobSta
     }
   };
 
-  const handleTriggerAudit = async () => {
-    if (!show) return;
-    setAuditing(true);
+  const toggleRescanSource = (src: string) => {
+    setRescanSources(prev => ({
+      ...prev,
+      [src]: !prev[src],
+    }));
+  };
+
+  const handleExecuteRescan = async () => {
+    if (!show || !rescanModal) return;
+    setSubmittingRescan(true);
     try {
-      const res = await api.triggerAudit(show.id);
+      const activeSources = Object.keys(rescanSources).filter(k => rescanSources[k]);
+      let res: { success: boolean; job_id: number; message: string };
+
+      if (rescanModal.targetType === 'episode' && rescanModal.episodeId) {
+        res = await api.rescanEpisode(rescanModal.episodeId, {
+          sources: activeSources,
+        });
+      } else if (rescanModal.targetType === 'season' && rescanModal.seasonNumber !== undefined) {
+        res = await api.rescanSeason(show.id, rescanModal.seasonNumber, {
+          scan_mode: rescanMode,
+          sources: activeSources,
+        });
+      } else {
+        res = await api.rescanShow(show.id, {
+          scan_mode: rescanMode,
+          sources: activeSources,
+        });
+      }
+
+      setRescanModal(null);
       onJobStarted(res.job_id);
-    } catch (err) {
-      alert('Failed to start AI audit');
+    } catch (err: any) {
+      alert(err.message || 'Failed to start rescan');
     } finally {
-      setAuditing(false);
+      setSubmittingRescan(false);
     }
   };
 
@@ -76,7 +114,6 @@ export const ShowDetail: React.FC<ShowDetailProps> = ({ showId, onBack, onJobSta
     );
   }
 
-  // Get distinct seasons
   const seasons = Array.from(new Set(show.episodes?.map(e => e.season_number) || [])).sort((a, b) => a - b);
   const currentEpisodes = show.episodes?.filter(e => e.season_number === selectedSeason) || [];
 
@@ -124,34 +161,45 @@ export const ShowDetail: React.FC<ShowDetailProps> = ({ showId, onBack, onJobSta
           </div>
         </div>
 
-        {/* Action button */}
+        {/* Header Action: Rescan Entire Show */}
         <div className="flex-shrink-0 flex items-center space-x-3">
           <button
-            onClick={handleTriggerAudit}
-            disabled={auditing}
-            className="flex items-center space-x-2 bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white px-5 py-2.5 rounded-xl text-xs sm:text-sm font-semibold shadow-lg shadow-indigo-600/30 transition-all hover:scale-105 disabled:opacity-50"
+            onClick={() => setRescanModal({ targetType: 'show' })}
+            className="flex items-center space-x-2 bg-indigo-600 hover:bg-indigo-500 text-white px-5 py-2.5 rounded-xl text-xs sm:text-sm font-semibold shadow-lg shadow-indigo-600/30 transition-all hover:scale-105"
           >
-            <Sparkles className="w-4 h-4" />
-            <span>{auditing ? 'Auditing...' : 'Run Ollama AI Audit'}</span>
+            <RefreshCw className="w-4 h-4" />
+            <span>Rescan Show</span>
           </button>
         </div>
       </div>
 
-      {/* Season Tabs */}
-      <div className="flex items-center space-x-2 overflow-x-auto pb-4 mb-4">
-        {seasons.map(sNum => (
+      {/* Season Tabs & Season Rescan Control */}
+      <div className="flex items-center justify-between overflow-x-auto pb-4 mb-4 gap-4">
+        <div className="flex items-center space-x-2">
+          {seasons.map(sNum => (
+            <button
+              key={sNum}
+              onClick={() => setSelectedSeason(sNum)}
+              className={`px-4 py-2 rounded-xl text-xs font-bold transition-all whitespace-nowrap ${
+                selectedSeason === sNum
+                  ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/20'
+                  : 'bg-dark-800 text-slate-400 hover:text-slate-200 hover:bg-dark-700 border border-dark-700'
+              }`}
+            >
+              {sNum === 0 ? 'Specials (Season 0)' : `Season ${sNum}`}
+            </button>
+          ))}
+        </div>
+
+        {selectedSeason !== null && (
           <button
-            key={sNum}
-            onClick={() => setSelectedSeason(sNum)}
-            className={`px-4 py-2 rounded-xl text-xs font-bold transition-all whitespace-nowrap ${
-              selectedSeason === sNum
-                ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/20'
-                : 'bg-dark-800 text-slate-400 hover:text-slate-200 hover:bg-dark-700 border border-dark-700'
-            }`}
+            onClick={() => setRescanModal({ targetType: 'season', seasonNumber: selectedSeason })}
+            className="flex items-center space-x-1.5 px-3.5 py-1.5 rounded-xl bg-dark-800 hover:bg-dark-700 text-indigo-300 border border-indigo-500/30 text-xs font-semibold whitespace-nowrap transition-colors"
           >
-            {sNum === 0 ? 'Specials (Season 0)' : `Season ${sNum}`}
+            <RefreshCw className="w-3.5 h-3.5" />
+            <span>Rescan Season {selectedSeason === 0 ? '0 (Specials)' : selectedSeason}</span>
           </button>
-        ))}
+        )}
       </div>
 
       {/* Episodes Inspector Table / Accordion */}
@@ -219,12 +267,12 @@ export const ShowDetail: React.FC<ShowDetailProps> = ({ showId, onBack, onJobSta
                       </p>
                     </div>
 
-                    {/* AI Audit Notes if any */}
+                    {/* AI Reasoning / Notes if any */}
                     {ep.ai_audit_notes && (
                       <div className="p-4 rounded-xl bg-indigo-950/40 border border-indigo-500/30 flex items-start space-x-3 text-xs text-indigo-200">
                         <Sparkles className="w-4 h-4 text-indigo-400 flex-shrink-0 mt-0.5" />
                         <div>
-                          <strong className="font-semibold block mb-0.5">Ollama AI Audit Reasoning:</strong>
+                          <strong className="font-semibold block mb-0.5">Matching & Verification Notes:</strong>
                           <span>{ep.ai_audit_notes}</span>
                         </div>
                       </div>
@@ -236,13 +284,26 @@ export const ShowDetail: React.FC<ShowDetailProps> = ({ showId, onBack, onJobSta
                         <h4 className="text-xs font-bold uppercase tracking-wider text-slate-400">
                           Source Variations & Transcripts ({ep.source_variations.length})
                         </h4>
-                        <button
-                          onClick={() => setManualMatchModal({ episode: ep, source: 'tmdb', season: ep.season_number, episode_num: ep.episode_number, title: ep.title })}
-                          className="px-2.5 py-1 rounded-lg bg-indigo-600/20 hover:bg-indigo-600/30 text-indigo-300 border border-indigo-500/30 text-[11px] font-semibold flex items-center space-x-1 transition-colors"
-                        >
-                          <Edit3 className="w-3 h-3" />
-                          <span>Manual Match / Audit</span>
-                        </button>
+                        <div className="flex items-center space-x-2">
+                          <button
+                            onClick={() => setRescanModal({
+                              targetType: 'episode',
+                              episodeId: ep.id,
+                              episodeTitle: `S${String(ep.season_number).padStart(2, '0')}E${String(ep.episode_number).padStart(2, '0')} - ${ep.title}`
+                            })}
+                            className="px-2.5 py-1 rounded-lg bg-indigo-600/20 hover:bg-indigo-600/30 text-indigo-300 border border-indigo-500/30 text-[11px] font-semibold flex items-center space-x-1 transition-colors"
+                          >
+                            <RefreshCw className="w-3 h-3" />
+                            <span>Rescan Episode</span>
+                          </button>
+                          <button
+                            onClick={() => setManualMatchModal({ episode: ep, source: 'tmdb', season: ep.season_number, episode_num: ep.episode_number, title: ep.title })}
+                            className="px-2.5 py-1 rounded-lg bg-dark-700 hover:bg-dark-600 text-slate-200 border border-dark-600 text-[11px] font-semibold flex items-center space-x-1 transition-colors"
+                          >
+                            <Edit3 className="w-3 h-3" />
+                            <span>Manual Match / Audit</span>
+                          </button>
+                        </div>
                       </div>
 
                       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -309,6 +370,116 @@ export const ShowDetail: React.FC<ShowDetailProps> = ({ showId, onBack, onJobSta
           })
         )}
       </div>
+
+      {/* Unified Rescan Modal (Show, Season, Episode) */}
+      {rescanModal && (
+        <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4 animate-fade-in">
+          <div className="bg-dark-900 border border-dark-700 rounded-2xl max-w-lg w-full p-6 shadow-2xl space-y-4">
+            <div className="flex items-center justify-between pb-3 border-b border-dark-700">
+              <div className="flex items-center space-x-2">
+                <RefreshCw className="w-4 h-4 text-indigo-400" />
+                <h3 className="text-sm font-bold text-white">
+                  {rescanModal.targetType === 'show' && `Rescan Show: ${show.title}`}
+                  {rescanModal.targetType === 'season' && `Rescan Season ${rescanModal.seasonNumber}`}
+                  {rescanModal.targetType === 'episode' && `Rescan: ${rescanModal.episodeTitle}`}
+                </h3>
+              </div>
+              <button
+                onClick={() => setRescanModal(null)}
+                className="text-slate-500 hover:text-white p-1 rounded-lg hover:bg-dark-800"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="space-y-4 text-xs">
+              <div>
+                <label className="block text-slate-300 font-semibold mb-2">Scan Mode</label>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setRescanMode('full')}
+                    className={`p-2.5 rounded-xl border text-left transition-all ${
+                      rescanMode === 'full'
+                        ? 'bg-indigo-600/20 border-indigo-500 text-white font-semibold'
+                        : 'bg-dark-800 border-dark-700 text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    <span className="block font-bold">All Sources</span>
+                    <span className="text-[11px] text-slate-400 block mt-0.5">Scan TMDB, TVmaze, and OMDb</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setRescanMode('custom')}
+                    className={`p-2.5 rounded-xl border text-left transition-all ${
+                      rescanMode === 'custom'
+                        ? 'bg-indigo-600/20 border-indigo-500 text-white font-semibold'
+                        : 'bg-dark-800 border-dark-700 text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    <span className="block font-bold">Custom Sources</span>
+                    <span className="text-[11px] text-slate-400 block mt-0.5">Select specific providers</span>
+                  </button>
+                </div>
+              </div>
+
+              {rescanMode === 'custom' && (
+                <div className="p-3 bg-dark-800 rounded-xl border border-dark-700 space-y-2">
+                  <span className="text-slate-300 font-semibold block mb-1">Target Providers:</span>
+                  <div className="flex items-center space-x-4">
+                    <label className="flex items-center space-x-2 cursor-pointer text-slate-300 hover:text-white">
+                      <input
+                        type="checkbox"
+                        checked={rescanSources.tmdb}
+                        onChange={() => toggleRescanSource('tmdb')}
+                        className="rounded bg-dark-900 border-dark-600 text-indigo-600 focus:ring-0"
+                      />
+                      <span>TMDB</span>
+                    </label>
+                    <label className="flex items-center space-x-2 cursor-pointer text-slate-300 hover:text-white">
+                      <input
+                        type="checkbox"
+                        checked={rescanSources.tvmaze}
+                        onChange={() => toggleRescanSource('tvmaze')}
+                        className="rounded bg-dark-900 border-dark-600 text-indigo-600 focus:ring-0"
+                      />
+                      <span>TVmaze</span>
+                    </label>
+                    <label className="flex items-center space-x-2 cursor-pointer text-slate-300 hover:text-white">
+                      <input
+                        type="checkbox"
+                        checked={rescanSources.omdb}
+                        onChange={() => toggleRescanSource('omdb')}
+                        className="rounded bg-dark-900 border-dark-600 text-indigo-600 focus:ring-0"
+                      />
+                      <span>OMDb</span>
+                    </label>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="pt-3 border-t border-dark-700 flex items-center justify-end space-x-2">
+              <button
+                type="button"
+                onClick={() => setRescanModal(null)}
+                className="px-3.5 py-2 rounded-xl bg-dark-800 hover:bg-dark-700 text-slate-300 text-xs font-semibold border border-dark-600 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleExecuteRescan}
+                disabled={submittingRescan}
+                className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold shadow-lg shadow-indigo-600/30 transition-all flex items-center space-x-1.5 disabled:opacity-50"
+              >
+                <RefreshCw className="w-3.5 h-3.5" />
+                <span>{submittingRescan ? 'Starting...' : 'Start Rescan'}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Manual Match Modal */}
       {manualMatchModal && (

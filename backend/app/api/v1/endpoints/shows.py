@@ -1,3 +1,4 @@
+import json
 import asyncio
 from typing import List, Dict, Any, Optional
 from datetime import datetime
@@ -10,7 +11,10 @@ from backend.app.core.database import get_db, AsyncSessionLocal
 from backend.app.models.show import Show, Episode, EpisodeSourceMetadata
 from backend.app.models.setting import Setting
 from backend.app.models.job import Job
-from backend.app.schemas.show import ShowRead, ShowDetailRead, ShowCreate, SonarrShowLookup
+from backend.app.schemas.show import (
+    ShowRead, ShowDetailRead, ShowCreate, SonarrShowLookup,
+    ShowImportRequest, ShowRescanRequest
+)
 from backend.app.services.sonarr_client import SonarrClient
 from backend.app.services.matching_engine import MatchingEngine
 from backend.app.services.audit_engine import AuditEngine
@@ -18,8 +22,16 @@ from backend.app.services.audit_engine import AuditEngine
 router = APIRouter(prefix="/shows", tags=["shows"])
 
 
-async def run_import_pipeline(show_id: int, sonarr_series_id: int, job_id: int):
-    """Background task to run multi-source ingestion, Ollama matching, and final audit with concurrency control."""
+async def run_import_pipeline(
+    show_id: int,
+    sonarr_series_id: int,
+    job_id: int,
+    scan_mode: str = "full",
+    sources: Optional[List[str]] = None,
+    season_number: Optional[int] = None,
+    episode_id: Optional[int] = None
+):
+    """Background task to run multi-source ingestion and Ollama matching with concurrency control."""
     from backend.app.services.concurrency_manager import concurrency_manager
 
     concurrency_manager.register_task(job_id, asyncio.current_task())
@@ -42,38 +54,26 @@ async def run_import_pipeline(show_id: int, sonarr_series_id: int, job_id: int):
                 try:
                     if job:
                         job.status = "RUNNING"
-                        job.progress = 5.0
-                        job.message = "Initializing multi-source metadata retrieval..."
+                        job.progress = 2.0
+                        job.message = "Initializing show metadata..."
                         await db.commit()
 
-                    # 1. Matching Engine
+                    # Execute Matching Engine
                     show = await MatchingEngine.process_show_ingestion(
                         db=db,
                         sonarr_series_id=sonarr_series_id,
                         config=settings_map,
-                        job=job
-                    )
-
-                    if concurrency_manager.is_cancelled(job_id):
-                        return
-
-                    # 2. Audit Engine
-                    if job:
-                        job.progress = 85.0
-                        job.message = "Running Ollama full-show consistency audit..."
-                        await db.commit()
-
-                    await AuditEngine.audit_show_consistency(
-                        db=db,
-                        show_id=show.id,
-                        config=settings_map,
-                        job=job
+                        job=job,
+                        scan_mode=scan_mode,
+                        selected_sources=sources,
+                        target_season_number=season_number,
+                        target_episode_id=episode_id
                     )
 
                     if job and not concurrency_manager.is_cancelled(job_id):
                         job.status = "COMPLETED"
                         job.progress = 100.0
-                        job.message = "Show ingestion and AI audit completed successfully."
+                        job.message = "Show ingestion and matching completed successfully."
                         job.finished_at = datetime.utcnow()
                         await db.commit()
 
@@ -99,19 +99,20 @@ async def run_import_pipeline(show_id: int, sonarr_series_id: int, job_id: int):
 async def list_shows(db: AsyncSession = Depends(get_db)):
     stmt = select(Show).options(
         selectinload(Show.episodes).selectinload(Episode.source_variations)
-    )
+    ).order_by(Show.title)
     res = await db.execute(stmt)
     shows = res.scalars().all()
 
     result = []
     for s in shows:
         ep_count = len(s.episodes)
-        sources = set()
+        matched_sources: Dict[str, int] = {}
         for ep in s.episodes:
             for v in ep.source_variations:
-                sources.add(v.source_name)
+                if v.match_method not in ("NONE", "NO_MATCH"):
+                    matched_sources[v.source_name] = matched_sources.get(v.source_name, 0) + 1
 
-        show_dict = {
+        s_dict = {
             "id": s.id,
             "sonarr_series_id": s.sonarr_series_id,
             "title": s.title,
@@ -132,43 +133,44 @@ async def list_shows(db: AsyncSession = Depends(get_db)):
             "created_at": s.created_at,
             "updated_at": s.updated_at,
             "episode_count": ep_count,
-            "mapped_sources_summary": {"sources": list(sources)}
+            "mapped_sources_summary": matched_sources
         }
-        result.append(ShowRead(**show_dict))
+        result.append(s_dict)
     return result
 
 
-@router.get("/sonarr-lookup", response_model=List[SonarrShowLookup])
+@router.get("/lookup", response_model=List[SonarrShowLookup])
 async def lookup_sonarr_shows(db: AsyncSession = Depends(get_db)):
-    """Fetch series list from connected Sonarr instance and flag already-imported ones."""
+    """Fetches all series from the user's configured Sonarr instance."""
     stmt = select(Setting)
     res = await db.execute(stmt)
     settings_map = {r.key: r.value for r in res.scalars().all()}
 
     sonarr_url = settings_map.get("sonarr_url")
     sonarr_key = settings_map.get("sonarr_api_key")
+
     if not sonarr_url or not sonarr_key:
-        raise HTTPException(status_code=400, detail="Sonarr URL or API key is not configured in Settings.")
+        raise HTTPException(
+            status_code=400,
+            detail="Sonarr URL and API Key must be configured in Settings first."
+        )
 
-    try:
-        series_list = await SonarrClient.get_series(sonarr_url, sonarr_key)
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Failed to fetch from Sonarr: {str(e)}")
+    sonarr_series = await SonarrClient.get_series(sonarr_url, sonarr_key)
 
-    # Get imported show IDs
     stmt_imported = select(Show.sonarr_series_id)
     res_imported = await db.execute(stmt_imported)
     imported_ids = set(res_imported.scalars().all())
 
     results = []
-    for s in series_list:
+    for s in sonarr_series:
+        s_id = s.get("id")
         poster = None
         for img in s.get("images", []):
             if img.get("coverType") == "poster":
                 poster = img.get("remoteUrl") or img.get("url")
 
         results.append(SonarrShowLookup(
-            id=s.get("id"),
+            id=s_id,
             title=s.get("title", "Unknown"),
             year=s.get("year"),
             tvdb_id=s.get("tvdbId"),
@@ -176,40 +178,128 @@ async def lookup_sonarr_shows(db: AsyncSession = Depends(get_db)):
             tmdb_id=s.get("tmdbId"),
             overview=s.get("overview"),
             poster_url=poster,
-            episode_count=s.get("statistics", {}).get("totalEpisodeCount", 0),
+            episode_count=s.get("statistics", {}).get("episodeCount", 0),
             monitored=s.get("monitored", True),
             path=s.get("path"),
-            is_imported=s.get("id") in imported_ids
+            is_imported=(s_id in imported_ids)
         ))
+
     return results
 
 
-@router.post("/import", response_model=Dict[str, Any])
+@router.post("/import")
 async def import_show(
-    payload: ShowCreate,
+    payload: ShowImportRequest,
     background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db)
 ):
-    """Triggers background import and AI matching for a Sonarr show."""
-    # Create background job record
+    """Triggers background import and AI matching for a Sonarr show with scan options."""
+    job_payload = {
+        "sonarr_series_id": payload.sonarr_series_id,
+        "show_id": 0,
+        "scan_mode": payload.scan_mode or "full",
+        "sources": payload.sources or ["tmdb", "tvmaze", "omdb"],
+        "season_number": None,
+        "episode_id": None
+    }
+
     job = Job(
         job_type="IMPORT_SHOW",
         status="PENDING",
         progress=0.0,
-        message=f"Queued import for Sonarr series ID {payload.sonarr_series_id}..."
+        message=f"Queued import for Sonarr series ID {payload.sonarr_series_id} ({payload.scan_mode} scan)...",
+        payload=json.dumps(job_payload)
     )
     db.add(job)
     await db.commit()
     await db.refresh(job)
 
-    # Launch background task
-    background_tasks.add_task(run_import_pipeline, 0, payload.sonarr_series_id, job.id)
+    background_tasks.add_task(
+        run_import_pipeline,
+        show_id=0,
+        sonarr_series_id=payload.sonarr_series_id,
+        job_id=job.id,
+        scan_mode=payload.scan_mode or "full",
+        sources=payload.sources or ["tmdb", "tvmaze", "omdb"]
+    )
 
     return {
         "success": True,
-        "message": f"Show import started in background.",
+        "message": "Show import started in background.",
         "job_id": job.id
     }
+
+
+@router.post("/{show_id}/rescan")
+async def rescan_show(
+    show_id: int,
+    payload: ShowRescanRequest,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db)
+):
+    """Triggers a rescan of an existing show with configurable scan options."""
+    stmt = select(Show).where(Show.id == show_id)
+    res = await db.execute(stmt)
+    show = res.scalars().first()
+    if not show:
+        raise HTTPException(status_code=404, detail="Show not found")
+
+    job_payload = {
+        "sonarr_series_id": show.sonarr_series_id,
+        "show_id": show.id,
+        "scan_mode": payload.scan_mode or "full",
+        "sources": payload.sources or ["tmdb", "tvmaze", "omdb"],
+        "season_number": payload.season_number,
+        "episode_id": payload.episode_id
+    }
+
+    scope_str = "Full Show"
+    if payload.episode_id is not None:
+        scope_str = f"Episode #{payload.episode_id}"
+    elif payload.season_number is not None:
+        scope_str = f"Season {payload.season_number}"
+
+    job = Job(
+        show_id=show.id,
+        job_type="AI_MATCHING",
+        status="PENDING",
+        progress=0.0,
+        message=f"Queued rescan for '{show.title}' [{scope_str}]...",
+        payload=json.dumps(job_payload)
+    )
+    db.add(job)
+    await db.commit()
+    await db.refresh(job)
+
+    background_tasks.add_task(
+        run_import_pipeline,
+        show_id=show.id,
+        sonarr_series_id=show.sonarr_series_id,
+        job_id=job.id,
+        scan_mode=payload.scan_mode or "full",
+        sources=payload.sources or ["tmdb", "tvmaze", "omdb"],
+        season_number=payload.season_number,
+        episode_id=payload.episode_id
+    )
+
+    return {
+        "success": True,
+        "message": f"Rescan started for '{show.title}'.",
+        "job_id": job.id
+    }
+
+
+@router.post("/{show_id}/seasons/{season_number}/rescan")
+async def rescan_season(
+    show_id: int,
+    season_number: int,
+    payload: ShowRescanRequest,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db)
+):
+    """Triggers a rescan for a specific season of an existing show."""
+    payload.season_number = season_number
+    return await rescan_show(show_id, payload, background_tasks, db)
 
 
 @router.get("/{show_id}", response_model=ShowDetailRead)

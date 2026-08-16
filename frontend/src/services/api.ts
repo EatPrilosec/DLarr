@@ -52,7 +52,7 @@ export const api = {
   },
 
   async lookupSonarrShows(): Promise<SonarrShowLookup[]> {
-    const res = await fetch(`${API_BASE}/shows/sonarr-lookup`);
+    const res = await fetch(`${API_BASE}/shows/lookup`);
     if (!res.ok) {
       const err = await res.json().catch(() => ({ detail: 'Failed to query Sonarr' }));
       throw new Error(err.detail || 'Failed to query Sonarr');
@@ -60,13 +60,47 @@ export const api = {
     return res.json();
   },
 
-  async importShow(sonarr_series_id: number): Promise<{ success: boolean; job_id: number; message: string }> {
+  async importShow(
+    sonarr_series_id: number,
+    options?: { scan_mode?: string; sources?: string[] }
+  ): Promise<{ success: boolean; job_id: number; message: string }> {
     const res = await fetch(`${API_BASE}/shows/import`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sonarr_series_id }),
+      body: JSON.stringify({
+        sonarr_series_id,
+        scan_mode: options?.scan_mode || 'full',
+        sources: options?.sources || ['tmdb', 'tvmaze', 'omdb'],
+      }),
     });
     if (!res.ok) throw new Error('Failed to initiate show import');
+    return res.json();
+  },
+
+  async rescanShow(
+    showId: number,
+    options?: { scan_mode?: string; sources?: string[]; season_number?: number; episode_id?: number }
+  ): Promise<{ success: boolean; job_id: number; message: string }> {
+    const res = await fetch(`${API_BASE}/shows/${showId}/rescan`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(options || {}),
+    });
+    if (!res.ok) throw new Error('Failed to initiate show rescan');
+    return res.json();
+  },
+
+  async rescanSeason(
+    showId: number,
+    seasonNumber: number,
+    options?: { scan_mode?: string; sources?: string[] }
+  ): Promise<{ success: boolean; job_id: number; message: string }> {
+    const res = await fetch(`${API_BASE}/shows/${showId}/seasons/${seasonNumber}/rescan`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(options || {}),
+    });
+    if (!res.ok) throw new Error(`Failed to rescan season ${seasonNumber}`);
     return res.json();
   },
 
@@ -74,6 +108,19 @@ export const api = {
   async getEpisode(id: number): Promise<Episode> {
     const res = await fetch(`${API_BASE}/episodes/${id}`);
     if (!res.ok) throw new Error('Failed to fetch episode');
+    return res.json();
+  },
+
+  async rescanEpisode(
+    episodeId: number,
+    options?: { sources?: string[] }
+  ): Promise<{ success: boolean; job_id: number; message: string }> {
+    const res = await fetch(`${API_BASE}/episodes/${episodeId}/rescan`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(options || {}),
+    });
+    if (!res.ok) throw new Error('Failed to rescan episode');
     return res.json();
   },
 
@@ -120,13 +167,6 @@ export const api = {
     return res.json();
   },
 
-  // Audit
-  async triggerAudit(showId: number): Promise<{ success: boolean; job_id: number }> {
-    const res = await fetch(`${API_BASE}/audit/${showId}`, { method: 'POST' });
-    if (!res.ok) throw new Error('Failed to trigger show audit');
-    return res.json();
-  },
-
   // Jobs
   async getJobs(): Promise<Job[]> {
     const res = await fetch(`${API_BASE}/jobs`);
@@ -149,6 +189,12 @@ export const api = {
   async cancelAllJobs(): Promise<{ success: boolean; message: string; cancelled_count: number }> {
     const res = await fetch(`${API_BASE}/jobs/cancel-all`, { method: 'POST' });
     if (!res.ok) throw new Error('Failed to cancel all jobs');
+    return res.json();
+  },
+
+  async restartJob(id: number): Promise<{ success: boolean; message: string; job_id: number }> {
+    const res = await fetch(`${API_BASE}/jobs/${id}/restart`, { method: 'POST' });
+    if (!res.ok) throw new Error('Failed to restart job');
     return res.json();
   },
 };

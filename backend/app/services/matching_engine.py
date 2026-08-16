@@ -697,9 +697,14 @@ class MatchingEngine:
         sonarr_series_id: int,
         config: Dict[str, Any],
         job: Optional[Job] = None,
+        scan_mode: str = "full",
+        selected_sources: Optional[List[str]] = None,
+        target_season_number: Optional[int] = None,
+        target_episode_id: Optional[int] = None,
     ) -> Show:
         """
         Full show ingestion orchestrator executing the Multi-Stage Batch & Search Matching Pipeline with continuous live progress tracking.
+        Supports full scan, no scan, custom sources, and targeted season/episode rescans.
         """
         from backend.app.services.concurrency_manager import concurrency_manager
 
@@ -720,7 +725,13 @@ class MatchingEngine:
                 except Exception:
                     pass
 
-        await update_job_progress(2.0, f"Fetching show metadata from Sonarr (Series ID: {sonarr_series_id})...")
+        target_desc = ""
+        if target_episode_id is not None:
+            target_desc = f" (Episode ID: {target_episode_id})"
+        elif target_season_number is not None:
+            target_desc = f" (Season: {target_season_number})"
+
+        await update_job_progress(2.0, f"Fetching show metadata from Sonarr (Series ID: {sonarr_series_id}){target_desc}...")
 
         # 1. Fetch from Sonarr
         sonarr_url = config.get("sonarr_url")
@@ -827,6 +838,18 @@ class MatchingEngine:
                 db.add(sonarr_meta)
 
         await db.commit()
+
+        # Check if scan_mode is 'none'
+        canonical_list = list(episodes_map.values())
+        if target_season_number is not None:
+            canonical_list = [ep for ep in canonical_list if ep.season_number == target_season_number]
+        if target_episode_id is not None:
+            canonical_list = [ep for ep in canonical_list if ep.id == target_episode_id]
+
+        if scan_mode == "none" or not canonical_list:
+            await update_job_progress(100.0, "Show metadata synced from Sonarr. External AI scan skipped per options.")
+            return show
+
         await update_job_progress(8.0, "Fetching external repositories (TMDB, TVmaze, OMDb)...")
 
         # 4. Fetch External Sources
@@ -837,7 +860,7 @@ class MatchingEngine:
                 if not show.tmdb_id and show.tvdb_id:
                     show.tmdb_id = await TMDBClient.find_by_external_id(tmdb_key, str(show.tvdb_id), "tvdb_id")
                 if show.tmdb_id:
-                    seasons = set(ep.season_number for ep in episodes_map.values())
+                    seasons = set(ep.season_number for ep in canonical_list)
                     for s in sorted(seasons):
                         eps = await TMDBClient.get_season_episodes(tmdb_key, show.tmdb_id, s)
                         for t_ep in eps:
@@ -860,7 +883,7 @@ class MatchingEngine:
         omdb_key = config.get("omdb_api_key")
         if omdb_key and show.imdb_id:
             try:
-                seasons = set(ep.season_number for ep in episodes_map.values() if ep.season_number > 0)
+                seasons = set(ep.season_number for ep in canonical_list if ep.season_number > 0)
                 for s in sorted(seasons):
                     omdb_eps = await OMDbClient.get_season_episodes(omdb_key, show.imdb_id, s)
                     for o_ep in omdb_eps:
@@ -869,18 +892,19 @@ class MatchingEngine:
             except Exception as e:
                 await log(f"OMDb fetch error: {str(e)}")
 
-        # 5. Multi-Stage Matching for Each Source with Distributed Progress
+        # 5. Multi-Stage Matching for Selected Sources with Distributed Progress
         ollama_url = config.get("ollama_url", "http://localhost:11434")
         primary_model = config.get("ollama_primary_model", "gemma4:e4b")
         fallback_model = config.get("ollama_fallback_model", "gemma4-obliterated:latest")
-        canonical_list = list(episodes_map.values())
+
+        norm_sources = [s.lower().strip() for s in (selected_sources or ["tmdb", "tvmaze", "omdb"])]
 
         active_sources = []
-        if all_tmdb_episodes:
+        if all_tmdb_episodes and "tmdb" in norm_sources:
             active_sources.append(("TMDB", all_tmdb_episodes))
-        if all_tvmaze_episodes:
+        if all_tvmaze_episodes and "tvmaze" in norm_sources:
             active_sources.append(("TVmaze", all_tvmaze_episodes))
-        if all_omdb_episodes:
+        if all_omdb_episodes and "omdb" in norm_sources:
             active_sources.append(("OMDb", all_omdb_episodes))
 
         start_pct = 10.0

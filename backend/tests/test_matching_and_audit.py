@@ -110,9 +110,11 @@ async def test_ai_search_candidates_parsing():
 
 @pytest.mark.asyncio
 async def test_audit_engine_execution():
+    import random
+    s_id = random.randint(100000, 999999)
     async with AsyncSessionLocal() as db:
         show = Show(
-            sonarr_series_id=999,
+            sonarr_series_id=s_id,
             title="Test AI Show",
             year=2024,
             status="continuing"
@@ -122,7 +124,7 @@ async def test_audit_engine_execution():
 
         ep = Episode(
             show_id=show.id,
-            sonarr_episode_id=99901,
+            sonarr_episode_id=s_id * 10,
             season_number=1,
             episode_number=1,
             title="Pilot Episode",

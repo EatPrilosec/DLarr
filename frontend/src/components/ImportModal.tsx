@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { X, Search, Tv, Check, Loader2, AlertCircle } from 'lucide-react';
+import { X, Search, Tv, Check, Loader2, AlertCircle, Settings2 } from 'lucide-react';
 import { api } from '../services/api';
 import { SonarrShowLookup } from '../types';
 
@@ -15,6 +15,14 @@ export const ImportModal: React.FC<ImportModalProps> = ({ isOpen, onClose, onSho
   const [search, setSearch] = useState('');
   const [importingId, setImportingId] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  // Scan Options State
+  const [scanMode, setScanMode] = useState<'full' | 'none' | 'custom'>('full');
+  const [selectedSources, setSelectedSources] = useState<{ [key: string]: boolean }>({
+    tmdb: true,
+    tvmaze: true,
+    omdb: true,
+  });
 
   useEffect(() => {
     if (isOpen) {
@@ -35,10 +43,21 @@ export const ImportModal: React.FC<ImportModalProps> = ({ isOpen, onClose, onSho
     }
   };
 
+  const toggleSource = (src: string) => {
+    setSelectedSources(prev => ({
+      ...prev,
+      [src]: !prev[src],
+    }));
+  };
+
   const handleImport = async (showId: number) => {
     setImportingId(showId);
     try {
-      const res = await api.importShow(showId);
+      const activeSources = Object.keys(selectedSources).filter(k => selectedSources[k]);
+      const res = await api.importShow(showId, {
+        scan_mode: scanMode,
+        sources: scanMode === 'none' ? [] : activeSources,
+      });
       onShowImported(res.job_id);
       onClose();
     } catch (err: any) {
@@ -65,7 +84,7 @@ export const ImportModal: React.FC<ImportModalProps> = ({ isOpen, onClose, onSho
             </div>
             <div>
               <h2 className="text-lg font-bold text-white">Import Show from Sonarr</h2>
-              <p className="text-xs text-slate-400">Select a series to build the multi-source episode database and run AI verification</p>
+              <p className="text-xs text-slate-400">Select a series to build the multi-source episode database and configure scan options</p>
             </div>
           </div>
           <button
@@ -76,8 +95,81 @@ export const ImportModal: React.FC<ImportModalProps> = ({ isOpen, onClose, onSho
           </button>
         </div>
 
+        {/* Global Scan Options */}
+        <div className="px-6 py-3 border-b border-dark-700 bg-dark-900/60 flex flex-wrap items-center justify-between gap-3 text-xs">
+          <div className="flex items-center space-x-2">
+            <Settings2 className="w-4 h-4 text-indigo-400" />
+            <span className="font-semibold text-white">Scan Options:</span>
+            <div className="flex items-center bg-dark-800 p-1 rounded-lg border border-dark-600 space-x-1">
+              <button
+                onClick={() => setScanMode('full')}
+                className={`px-2.5 py-1 rounded-md transition-all font-medium ${
+                  scanMode === 'full'
+                    ? 'bg-indigo-600 text-white shadow-sm'
+                    : 'text-slate-400 hover:text-white'
+                }`}
+              >
+                Full Scan (All)
+              </button>
+              <button
+                onClick={() => setScanMode('none')}
+                className={`px-2.5 py-1 rounded-md transition-all font-medium ${
+                  scanMode === 'none'
+                    ? 'bg-amber-600 text-white shadow-sm'
+                    : 'text-slate-400 hover:text-white'
+                }`}
+              >
+                No Scan (Metadata Only)
+              </button>
+              <button
+                onClick={() => setScanMode('custom')}
+                className={`px-2.5 py-1 rounded-md transition-all font-medium ${
+                  scanMode === 'custom'
+                    ? 'bg-indigo-600 text-white shadow-sm'
+                    : 'text-slate-400 hover:text-white'
+                }`}
+              >
+                Custom Sources
+              </button>
+            </div>
+          </div>
+
+          {scanMode === 'custom' && (
+            <div className="flex items-center space-x-3 bg-dark-800 px-3 py-1.5 rounded-lg border border-dark-600">
+              <span className="text-slate-400">Sources:</span>
+              <label className="flex items-center space-x-1.5 cursor-pointer text-slate-300 hover:text-white">
+                <input
+                  type="checkbox"
+                  checked={selectedSources.tmdb}
+                  onChange={() => toggleSource('tmdb')}
+                  className="rounded bg-dark-900 border-dark-600 text-indigo-600 focus:ring-0"
+                />
+                <span>TMDB</span>
+              </label>
+              <label className="flex items-center space-x-1.5 cursor-pointer text-slate-300 hover:text-white">
+                <input
+                  type="checkbox"
+                  checked={selectedSources.tvmaze}
+                  onChange={() => toggleSource('tvmaze')}
+                  className="rounded bg-dark-900 border-dark-600 text-indigo-600 focus:ring-0"
+                />
+                <span>TVmaze</span>
+              </label>
+              <label className="flex items-center space-x-1.5 cursor-pointer text-slate-300 hover:text-white">
+                <input
+                  type="checkbox"
+                  checked={selectedSources.omdb}
+                  onChange={() => toggleSource('omdb')}
+                  className="rounded bg-dark-900 border-dark-600 text-indigo-600 focus:ring-0"
+                />
+                <span>OMDb</span>
+              </label>
+            </div>
+          )}
+        </div>
+
         {/* Search & Status */}
-        <div className="p-6 border-b border-dark-700 bg-dark-900/50">
+        <div className="p-6 border-b border-dark-700 bg-dark-900/40">
           <div className="relative">
             <Search className="w-5 h-5 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
             <input

@@ -1,6 +1,6 @@
 import json
 from typing import Dict, Any, Optional, List
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
@@ -8,6 +8,7 @@ from sqlalchemy.orm import selectinload
 from backend.app.core.database import get_db
 from backend.app.models.show import Show, Episode, EpisodeSourceMetadata
 from backend.app.schemas.episode import EpisodeRead, EpisodeUpdateOverride, ManualMatchRequest, MarkNoMatchRequest
+from backend.app.schemas.show import EpisodeRescanRequest
 
 router = APIRouter(prefix="/episodes", tags=["episodes"])
 
@@ -136,6 +137,70 @@ async def mark_episode_no_match(
     await db.commit()
     await db.refresh(ep)
     return ep
+
+
+@router.post("/{episode_id}/rescan")
+async def rescan_single_episode(
+    episode_id: int,
+    background_tasks: BackgroundTasks,
+    payload: Optional[EpisodeRescanRequest] = None,
+    db: AsyncSession = Depends(get_db)
+):
+    """Triggers a targeted AI rescan for a single episode."""
+    from backend.app.models.job import Job
+    from backend.app.api.v1.endpoints.shows import run_import_pipeline
+
+    stmt = select(Episode).where(Episode.id == episode_id)
+    res = await db.execute(stmt)
+    ep = res.scalars().first()
+    if not ep:
+        raise HTTPException(status_code=404, detail="Episode not found")
+
+    stmt_show = select(Show).where(Show.id == ep.show_id)
+    res_show = await db.execute(stmt_show)
+    show = res_show.scalars().first()
+    if not show:
+        raise HTTPException(status_code=404, detail="Associated show not found")
+
+    selected_sources = payload.sources if payload and payload.sources else ["tmdb", "tvmaze", "omdb"]
+
+    job_payload = {
+        "sonarr_series_id": show.sonarr_series_id,
+        "show_id": show.id,
+        "scan_mode": "full",
+        "sources": selected_sources,
+        "season_number": ep.season_number,
+        "episode_id": ep.id
+    }
+
+    job = Job(
+        show_id=show.id,
+        job_type="AI_MATCHING",
+        status="PENDING",
+        progress=0.0,
+        message=f"Queued rescan for S{ep.season_number:02d}E{ep.episode_number:02d} - '{ep.title}'...",
+        payload=json.dumps(job_payload)
+    )
+    db.add(job)
+    await db.commit()
+    await db.refresh(job)
+
+    background_tasks.add_task(
+        run_import_pipeline,
+        show_id=show.id,
+        sonarr_series_id=show.sonarr_series_id,
+        job_id=job.id,
+        scan_mode="full",
+        sources=selected_sources,
+        season_number=ep.season_number,
+        episode_id=ep.id
+    )
+
+    return {
+        "success": True,
+        "message": f"Rescan started for S{ep.season_number:02d}E{ep.episode_number:02d}.",
+        "job_id": job.id
+    }
 
 
 @router.patch("/{episode_id}", response_model=EpisodeRead)

@@ -207,7 +207,7 @@ export const Activity: React.FC<ActivityProps> = ({ activeJobId }) => {
                   <p className="text-xs text-slate-400 mt-0.5">{selectedJob.message}</p>
                 </div>
 
-                <div className="flex items-center space-x-4">
+                <div className="flex items-center space-x-3">
                   {(selectedJob.status === 'RUNNING' || selectedJob.status === 'PENDING') && (
                     <button
                       onClick={async () => {
@@ -225,6 +225,24 @@ export const Activity: React.FC<ActivityProps> = ({ activeJobId }) => {
                     >
                       <StopCircle className="w-3.5 h-3.5" />
                       <span>Stop Job</span>
+                    </button>
+                  )}
+
+                  {(selectedJob.status === 'CANCELLED' || selectedJob.status === 'FAILED') && (
+                    <button
+                      onClick={async () => {
+                        try {
+                          await api.restartJob(selectedJob.id);
+                          loadJobs();
+                        } catch (err: any) {
+                          alert(err.message || 'Failed to restart job');
+                        }
+                      }}
+                      className="bg-indigo-600/20 hover:bg-indigo-600/30 text-indigo-300 border border-indigo-500/30 px-3 py-1.5 rounded-xl text-xs font-semibold flex items-center space-x-1.5 transition-colors"
+                      title="Restart Job"
+                    >
+                      <RefreshCw className="w-3.5 h-3.5" />
+                      <span>Restart Job</span>
                     </button>
                   )}
 
