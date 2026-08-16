@@ -46,10 +46,10 @@ async def test_step1_batch_confirm_all_yes():
         (Episode(id=2, season_number=1, episode_number=2, title="Ep 2"), {"season": 1, "episode": 2, "title": "Ep 2"}),
     ]
 
-    with patch("backend.app.services.ollama_client.OllamaClient.query_with_retry_and_fallback") as mock_query:
-        mock_query.return_value = ("yes", "primary")
+    with patch("backend.app.services.ollama_client.OllamaClient.query_model_text", new_callable=AsyncMock) as mock_query:
+        mock_query.return_value = "yes"
 
-        confirmed_ids, _ = await MatchingEngine.ai_batch_confirm_matches(
+        confirmed_ids, model_used = await MatchingEngine.ai_batch_confirm_matches(
             ollama_url="http://mock:11434",
             primary_model="primary",
             fallback_model="fallback",
@@ -58,20 +58,24 @@ async def test_step1_batch_confirm_all_yes():
             batch_pairs=batch_pairs
         )
         assert confirmed_ids == {1, 2}
+        assert model_used == "primary"
 
 
 @pytest.mark.asyncio
-async def test_step1_batch_confirm_partial_failure():
+async def test_step1_batch_confirm_partial_with_fallback():
     batch_pairs = [
         (Episode(id=10, season_number=1, episode_number=1, title="Ep 1"), {"season": 1, "episode": 1, "title": "Ep 1"}),
-        (Episode(id=20, season_number=1, episode_number=2, title="Ep 2"), {"season": 1, "episode": 2, "title": "Wrong Story"}),
+        (Episode(id=20, season_number=1, episode_number=2, title="Ep 2"), {"season": 1, "episode": 2, "title": "Shifted Story"}),
     ]
 
-    with patch("backend.app.services.ollama_client.OllamaClient.query_with_retry_and_fallback") as mock_query:
-        # LLM reports S01E02 as a failure
-        mock_query.return_value = ("S01E02", "primary")
+    with patch("backend.app.services.ollama_client.OllamaClient.query_model_text", new_callable=AsyncMock) as mock_query:
+        # Primary rejects S01E02. Fallback is called on the remaining unconfirmed pair and confirms it ("yes").
+        mock_query.side_effect = [
+            "S01E02",  # Primary response (only confirms ep 10)
+            "yes"      # Fallback response for remaining ep 20
+        ]
 
-        confirmed_ids, _ = await MatchingEngine.ai_batch_confirm_matches(
+        confirmed_ids, model_used = await MatchingEngine.ai_batch_confirm_matches(
             ollama_url="http://mock:11434",
             primary_model="primary",
             fallback_model="fallback",
@@ -79,8 +83,9 @@ async def test_step1_batch_confirm_partial_failure():
             source_name="TMDB",
             batch_pairs=batch_pairs
         )
-        # Episode 10 confirmed, Episode 20 rejected
-        assert confirmed_ids == {10}
+        # Both confirmed thanks to fallback
+        assert confirmed_ids == {10, 20}
+        assert "fallback" in model_used
 
 
 @pytest.mark.asyncio

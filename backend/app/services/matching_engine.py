@@ -266,7 +266,8 @@ class MatchingEngine:
     ) -> Tuple[Set[int], str]:
         """
         Step 1A/1B/2B: 10-Episode Batch High-Context Confirmation Prompt
-        Prompts LLM to confirm all 10 comparisons with 'yes', or output comma-separated failed SxxEyy.
+        Prompts LLM to confirm comparisons with 'yes', or output comma-separated failed SxxEyy.
+        If primary model does not confirm all items, queries the fallback model on the remaining unconfirmed items.
         Returns: (confirmed_canonical_ids: Set[int], model_used: str)
         """
         if not batch_pairs:
@@ -274,61 +275,92 @@ class MatchingEngine:
         if not ollama_url:
             return set(ep.id for ep, _ in batch_pairs), "OLLAMA_DISABLED"
 
-        items = []
-        for idx, (s_ep, cand) in enumerate(batch_pairs, 1):
-            s_s = s_ep.season_number if s_ep.season_number is not None else 0
-            s_e = s_ep.episode_number if s_ep.episode_number is not None else 0
-            c_s = cand.get("season") if cand.get("season") is not None else 0
-            c_e = cand.get("episode") if cand.get("episode") is not None else 0
+        async def _query_batch_single_model(model_name: str, pairs: List[Tuple[Episode, Dict[str, Any]]]) -> Tuple[Set[int], bool]:
+            if not pairs:
+                return set(), True
 
-            items.append(
-                f"[Item {idx}]\n"
-                f"Sonarr: S{s_s:02d}E{s_e:02d} - \"{s_ep.title or ''}\" | Air Date: {s_ep.air_date or 'N/A'} | Overview: {(s_ep.overview or 'N/A')[:140]}\n"
-                f"{source_name}: S{c_s:02d}E{c_e:02d} - \"{cand.get('title') or ''}\" | Air Date: {cand.get('air_date') or 'N/A'} | Overview: {(cand.get('overview') or 'N/A')[:140]}"
+            items = []
+            for idx, (s_ep, cand) in enumerate(pairs, 1):
+                s_s = s_ep.season_number if s_ep.season_number is not None else 0
+                s_e = s_ep.episode_number if s_ep.episode_number is not None else 0
+                c_s = cand.get("season") if cand.get("season") is not None else 0
+                c_e = cand.get("episode") if cand.get("episode") is not None else 0
+
+                items.append(
+                    f"[Item {idx}]\n"
+                    f"Sonarr: S{s_s:02d}E{s_e:02d} - \"{s_ep.title or ''}\" | Air Date: {s_ep.air_date or 'N/A'} | Overview: {(s_ep.overview or 'N/A')[:140]}\n"
+                    f"{source_name}: S{c_s:02d}E{c_e:02d} - \"{cand.get('title') or ''}\" | Air Date: {cand.get('air_date') or 'N/A'} | Overview: {(cand.get('overview') or 'N/A')[:140]}"
+                )
+
+            items_str = "\n\n".join(items)
+
+            prompt = (
+                f"you are being used to programatically confirm episode matches of the show {show_title} from {source_name} to Sonarr's episodes for {show_title}.\n\n"
+                f"here are the {len(pairs)} proposed episode comparisons:\n\n"
+                f"{items_str}\n\n"
+                f"please answer with \"yes\" if all {len(pairs)} episodes are valid matches. If any are NOT matches, answer with a comma-separated list of the failed {source_name} episode numbers in SxxEyy format (e.g. S01E03, S01E08)."
             )
 
-        items_str = "\n\n".join(items)
+            system_prompt = (
+                "You are an expert TV episode matching engine. Confirm if the proposed episodes represent the exact same story. "
+                "Answer 'yes' if all match, or output a comma-separated list of failed SxxEyy episodes."
+            )
 
-        prompt = (
-            f"you are being used to programatically confirm episode matches of the show {show_title} from {source_name} to Sonarr's episodes for {show_title}.\n\n"
-            f"here are the {len(batch_pairs)} proposed episode comparisons:\n\n"
-            f"{items_str}\n\n"
-            f"please answer with \"yes\" if all {len(batch_pairs)} episodes are valid matches. If any are NOT matches, answer with a comma-separated list of the failed {source_name} episode numbers in SxxEyy format (e.g. S01E03, S01E08)."
-        )
+            resp_text = None
+            for attempt in range(2):
+                try:
+                    out = await OllamaClient.query_model_text(
+                        base_url=ollama_url,
+                        model=model_name,
+                        user_prompt=prompt,
+                        system_prompt=system_prompt,
+                        timeout=90.0
+                    )
+                    if out and out.strip():
+                        resp_text = out
+                        break
+                except Exception:
+                    pass
 
-        system_prompt = (
-            "You are an expert TV episode matching engine. Confirm if the proposed episodes represent the exact same story. "
-            "Answer 'yes' if all match, or output a comma-separated list of failed SxxEyy episodes."
-        )
+            if not resp_text:
+                return set(), False
 
-        resp_text, model_used = await OllamaClient.query_with_retry_and_fallback(
-            base_url=ollama_url,
-            primary_model=primary_model,
-            fallback_model=fallback_model,
-            user_prompt=prompt,
-            system_prompt=system_prompt
-        )
+            clean = resp_text.strip().lower()
+            failed_ses = set((int(s), int(e)) for s, e in re.findall(r"S(\d+)E(\d+)", resp_text, re.IGNORECASE))
 
-        clean = resp_text.strip().lower()
-        failed_ses = set((int(s), int(e)) for s, e in re.findall(r"S(\d+)E(\d+)", resp_text, re.IGNORECASE))
+            confirmed: Set[int] = set()
+            if not failed_ses and (clean.startswith("yes") or "yes" in clean.split() or clean == "true"):
+                for s_ep, _ in pairs:
+                    confirmed.add(s_ep.id)
+                return confirmed, True
+            elif failed_ses:
+                for s_ep, cand in pairs:
+                    cs = cand.get("season") if cand.get("season") is not None else 0
+                    ce = cand.get("episode") if cand.get("episode") is not None else 0
+                    if (cs, ce) not in failed_ses:
+                        confirmed.add(s_ep.id)
+                return confirmed, len(confirmed) == len(pairs)
+            elif clean.startswith("yes"):
+                for s_ep, _ in pairs:
+                    confirmed.add(s_ep.id)
+                return confirmed, True
 
-        confirmed_ids: Set[int] = set()
-        if not failed_ses and (clean.startswith("yes") or "yes" in clean.split() or clean == "true"):
-            # All 10 confirmed
-            for s_ep, _ in batch_pairs:
-                confirmed_ids.add(s_ep.id)
-        elif failed_ses:
-            # Partial confirmation
-            for s_ep, cand in batch_pairs:
-                cs = cand.get("season") if cand.get("season") is not None else 0
-                ce = cand.get("episode") if cand.get("episode") is not None else 0
-                if (cs, ce) not in failed_ses:
-                    confirmed_ids.add(s_ep.id)
-        elif clean.startswith("yes"):
-            for s_ep, _ in batch_pairs:
-                confirmed_ids.add(s_ep.id)
+            return confirmed, False
 
-        return confirmed_ids, model_used
+        # 1. First query primary model
+        confirmed_ids, all_confirmed = await _query_batch_single_model(primary_model, batch_pairs)
+        models_used = [primary_model]
+
+        # 2. If primary did not confirm all 10, query fallback model on remaining unconfirmed pairs
+        if not all_confirmed and fallback_model and fallback_model != primary_model:
+            remaining_pairs = [p for p in batch_pairs if p[0].id not in confirmed_ids]
+            if remaining_pairs:
+                fallback_confirmed, _ = await _query_batch_single_model(fallback_model, remaining_pairs)
+                if fallback_confirmed:
+                    confirmed_ids.update(fallback_confirmed)
+                    models_used.append(fallback_model)
+
+        return confirmed_ids, "+".join(models_used)
 
     @staticmethod
     async def ai_search_candidates(
