@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { ArrowLeft, Sparkles, ShieldCheck, RefreshCw, FileText, ChevronDown, ChevronRight, Layers, Check, AlertCircle } from 'lucide-react';
+import { ArrowLeft, Sparkles, ShieldCheck, RefreshCw, FileText, ChevronDown, ChevronRight, Layers, Check, AlertCircle, Edit3, Ban, X } from 'lucide-react';
 import { api } from '../services/api';
 import { Show, Episode, EpisodeSourceMetadata } from '../types';
 import { StatusBadge } from '../components/StatusBadge';
@@ -16,6 +16,7 @@ export const ShowDetail: React.FC<ShowDetailProps> = ({ showId, onBack, onJobSta
   const [selectedSeason, setSelectedSeason] = useState<number | null>(null);
   const [expandedEpisodeId, setExpandedEpisodeId] = useState<number | null>(null);
   const [transcriptModal, setTranscriptModal] = useState<{ title: string; content: string } | null>(null);
+  const [manualMatchModal, setManualMatchModal] = useState<{ episode: Episode; source: string; season: number; episode_num: number; title: string } | null>(null);
   const [auditing, setAuditing] = useState(false);
 
   useEffect(() => {
@@ -231,24 +232,43 @@ export const ShowDetail: React.FC<ShowDetailProps> = ({ showId, onBack, onJobSta
 
                     {/* Multi-Source Variations Grid */}
                     <div>
-                      <h4 className="text-xs font-bold uppercase tracking-wider text-slate-400 mb-3">
-                        Source Variations & Transcripts ({ep.source_variations.length})
-                      </h4>
+                      <div className="flex items-center justify-between mb-3">
+                        <h4 className="text-xs font-bold uppercase tracking-wider text-slate-400">
+                          Source Variations & Transcripts ({ep.source_variations.length})
+                        </h4>
+                        <button
+                          onClick={() => setManualMatchModal({ episode: ep, source: 'tmdb', season: ep.season_number, episode_num: ep.episode_number, title: ep.title })}
+                          className="px-2.5 py-1 rounded-lg bg-indigo-600/20 hover:bg-indigo-600/30 text-indigo-300 border border-indigo-500/30 text-[11px] font-semibold flex items-center space-x-1 transition-colors"
+                        >
+                          <Edit3 className="w-3 h-3" />
+                          <span>Manual Match / Audit</span>
+                        </button>
+                      </div>
 
                       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                         {ep.source_variations.map(source => (
                           <div
                             key={source.id}
-                            className="p-4 rounded-xl bg-dark-800/90 border border-dark-700 flex flex-col justify-between"
+                            className={`p-4 rounded-xl border flex flex-col justify-between ${
+                              source.match_method === 'NO_MATCH'
+                                ? 'bg-dark-900/40 border-dark-800 opacity-60'
+                                : 'bg-dark-800/90 border-dark-700'
+                            }`}
                           >
                             <div>
                               <div className="flex items-center justify-between mb-2">
                                 <span className="px-2 py-0.5 rounded bg-dark-700 text-indigo-300 border border-dark-600 text-[10px] font-mono font-bold uppercase">
                                   {source.source_name}
                                 </span>
-                                <span className="text-[10px] text-slate-400 font-mono">
-                                  S{source.source_season_number}E{source.source_episode_number}
-                                </span>
+                                {source.match_method !== 'NO_MATCH' ? (
+                                  <span className="text-[10px] text-slate-400 font-mono">
+                                    S{source.source_season_number}E{source.source_episode_number}
+                                  </span>
+                                ) : (
+                                  <span className="text-[10px] text-amber-500 font-mono font-bold">
+                                    NO MATCH
+                                  </span>
+                                )}
                               </div>
 
                               <h5 className="text-xs font-bold text-white mb-1">
@@ -289,6 +309,131 @@ export const ShowDetail: React.FC<ShowDetailProps> = ({ showId, onBack, onJobSta
           })
         )}
       </div>
+
+      {/* Manual Match Modal */}
+      {manualMatchModal && (
+        <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4 animate-fade-in">
+          <div className="bg-dark-900 border border-dark-700 rounded-2xl max-w-lg w-full p-6 shadow-2xl space-y-4">
+            <div className="flex items-center justify-between pb-3 border-b border-dark-700">
+              <div className="flex items-center space-x-2">
+                <Edit3 className="w-4 h-4 text-indigo-400" />
+                <h3 className="text-sm font-bold text-white">
+                  Manual Match: S{manualMatchModal.episode.season_number}E{manualMatchModal.episode.episode_number}
+                </h3>
+              </div>
+              <button
+                onClick={() => setManualMatchModal(null)}
+                className="text-slate-500 hover:text-white p-1 rounded-lg hover:bg-dark-800"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-3 bg-dark-800/80 rounded-xl border border-dark-700 text-xs">
+              <span className="text-[10px] font-bold uppercase text-slate-400 block mb-1">Sonarr Episode</span>
+              <p className="text-white font-bold">{manualMatchModal.episode.title}</p>
+              <p className="text-slate-400 text-[11px] mt-0.5">{manualMatchModal.episode.overview || 'No overview'}</p>
+            </div>
+
+            <div className="space-y-3">
+              <div>
+                <label className="block text-xs font-semibold text-slate-300 mb-1">Target Source Provider</label>
+                <select
+                  value={manualMatchModal.source}
+                  onChange={e => setManualMatchModal({ ...manualMatchModal, source: e.target.value })}
+                  className="w-full px-3 py-2 rounded-xl bg-dark-800 border border-dark-600 text-white text-xs font-mono focus:outline-none focus:border-indigo-500"
+                >
+                  <option value="tmdb">TMDB</option>
+                  <option value="tvmaze">TVmaze</option>
+                  <option value="omdb">OMDb</option>
+                </select>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-300 mb-1">Source Season Number</label>
+                  <input
+                    type="number"
+                    value={manualMatchModal.season}
+                    onChange={e => setManualMatchModal({ ...manualMatchModal, season: parseInt(e.target.value) || 0 })}
+                    className="w-full px-3 py-2 rounded-xl bg-dark-800 border border-dark-600 text-white text-xs font-mono focus:outline-none focus:border-indigo-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-300 mb-1">Source Episode Number</label>
+                  <input
+                    type="number"
+                    value={manualMatchModal.episode_num}
+                    onChange={e => setManualMatchModal({ ...manualMatchModal, episode_num: parseInt(e.target.value) || 0 })}
+                    className="w-full px-3 py-2 rounded-xl bg-dark-800 border border-dark-600 text-white text-xs font-mono focus:outline-none focus:border-indigo-500"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-300 mb-1">Source Episode Title (Optional)</label>
+                <input
+                  type="text"
+                  value={manualMatchModal.title}
+                  onChange={e => setManualMatchModal({ ...manualMatchModal, title: e.target.value })}
+                  placeholder="Episode title in source"
+                  className="w-full px-3 py-2 rounded-xl bg-dark-800 border border-dark-600 text-white text-xs font-mono focus:outline-none focus:border-indigo-500"
+                />
+              </div>
+            </div>
+
+            <div className="pt-3 border-t border-dark-700 flex items-center justify-between">
+              <button
+                type="button"
+                onClick={async () => {
+                  try {
+                    await api.markEpisodeNoMatch(manualMatchModal.episode.id, manualMatchModal.source);
+                    setManualMatchModal(null);
+                    loadShowDetail();
+                  } catch (err) {
+                    alert('Failed to mark as no match');
+                  }
+                }}
+                className="px-3 py-2 rounded-xl bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 border border-amber-500/30 text-xs font-semibold flex items-center space-x-1.5 transition-colors"
+              >
+                <Ban className="w-3.5 h-3.5" />
+                <span>Mark as No Match</span>
+              </button>
+
+              <div className="flex items-center space-x-2">
+                <button
+                  type="button"
+                  onClick={() => setManualMatchModal(null)}
+                  className="px-3 py-2 rounded-xl bg-dark-800 hover:bg-dark-700 text-slate-300 text-xs font-semibold border border-dark-600 transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    try {
+                      await api.manualMatchEpisode(manualMatchModal.episode.id, {
+                        source_name: manualMatchModal.source,
+                        source_season_number: manualMatchModal.season,
+                        source_episode_number: manualMatchModal.episode_num,
+                        title: manualMatchModal.title,
+                      });
+                      setManualMatchModal(null);
+                      loadShowDetail();
+                    } catch (err) {
+                      alert('Failed to save manual match');
+                    }
+                  }}
+                  className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold shadow-lg shadow-indigo-600/30 transition-all flex items-center space-x-1.5"
+                >
+                  <Check className="w-3.5 h-3.5" />
+                  <span>Confirm Match</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

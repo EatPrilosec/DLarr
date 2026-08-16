@@ -90,6 +90,36 @@ export const api = {
     return res.json();
   },
 
+  async manualMatchEpisode(
+    id: number,
+    data: {
+      source_name: string;
+      source_season_number?: number;
+      source_episode_number?: number;
+      title?: string;
+      overview?: string;
+      air_date?: string;
+    }
+  ): Promise<Episode> {
+    const res = await fetch(`${API_BASE}/episodes/${id}/manual-match`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+    if (!res.ok) throw new Error('Failed to save manual match');
+    return res.json();
+  },
+
+  async markEpisodeNoMatch(id: number, source_name: string): Promise<Episode> {
+    const res = await fetch(`${API_BASE}/episodes/${id}/mark-no-match`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ source_name }),
+    });
+    if (!res.ok) throw new Error('Failed to mark episode as no match');
+    return res.json();
+  },
+
   // Audit
   async triggerAudit(showId: number): Promise<{ success: boolean; job_id: number }> {
     const res = await fetch(`${API_BASE}/audit/${showId}`, { method: 'POST' });

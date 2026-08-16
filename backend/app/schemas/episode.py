@@ -64,3 +64,19 @@ class EpisodeUpdateOverride(BaseModel):
     ai_verification_status: Optional[str] = None
     ai_confidence_score: Optional[float] = None
     ai_audit_notes: Optional[str] = None
+
+
+class ManualMatchRequest(BaseModel):
+    source_name: str
+    source_episode_id: Optional[str] = None
+    source_season_number: Optional[int] = None
+    source_episode_number: Optional[int] = None
+    title: Optional[str] = None
+    overview: Optional[str] = None
+    air_date: Optional[str] = None
+    raw_metadata: Optional[str] = None
+
+
+class MarkNoMatchRequest(BaseModel):
+    source_name: str
+    reason: Optional[str] = "USER_MANUAL_NO_MATCH"
