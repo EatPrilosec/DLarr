@@ -958,47 +958,51 @@ class MatchingEngine:
             await update_job_progress(100.0, "Show metadata synced from Sonarr. External AI scan skipped per options.")
             return show
 
-        await update_job_progress(8.0, "Fetching external repositories (TMDB, TVmaze, OMDb)...")
+        norm_sources = [s.lower().strip() for s in (selected_sources or ["tmdb", "tvmaze", "omdb"])]
+        await update_job_progress(8.0, f"Fetching external repositories ({', '.join(s.upper() for s in norm_sources)})...")
 
-        # 4. Fetch External Sources
+        # 4. Fetch Selected External Sources Only
         all_tmdb_episodes: List[Dict[str, Any]] = []
-        tmdb_key = config.get("tmdb_api_key")
-        if tmdb_key:
-            try:
-                if not show.tmdb_id and show.tvdb_id:
-                    show.tmdb_id = await TMDBClient.find_by_external_id(tmdb_key, str(show.tvdb_id), "tvdb_id")
-                if show.tmdb_id:
-                    seasons = set(ep.season_number for ep in canonical_list)
-                    for s in sorted(seasons):
-                        eps = await TMDBClient.get_season_episodes(tmdb_key, show.tmdb_id, s)
-                        for t_ep in eps:
-                            all_tmdb_episodes.append({"id": str(t_ep.get("id")), "season": t_ep.get("season_number"), "episode": t_ep.get("episode_number"), "title": t_ep.get("name"), "overview": t_ep.get("overview"), "air_date": t_ep.get("air_date"), "raw": t_ep})
-                    await log(f"Retrieved {len(all_tmdb_episodes)} total TMDB episodes.")
-            except Exception as e: await log(f"TMDB fetch error: {str(e)}")
+        if "tmdb" in norm_sources:
+            tmdb_key = config.get("tmdb_api_key")
+            if tmdb_key:
+                try:
+                    if not show.tmdb_id and show.tvdb_id:
+                        show.tmdb_id = await TMDBClient.find_by_external_id(tmdb_key, str(show.tvdb_id), "tvdb_id")
+                    if show.tmdb_id:
+                        seasons = set(ep.season_number for ep in canonical_list)
+                        for s in sorted(seasons):
+                            eps = await TMDBClient.get_season_episodes(tmdb_key, show.tmdb_id, s)
+                            for t_ep in eps:
+                                all_tmdb_episodes.append({"id": str(t_ep.get("id")), "season": t_ep.get("season_number"), "episode": t_ep.get("episode_number"), "title": t_ep.get("name"), "overview": t_ep.get("overview"), "air_date": t_ep.get("air_date"), "raw": t_ep})
+                        await log(f"Retrieved {len(all_tmdb_episodes)} total TMDB episodes.")
+                except Exception as e: await log(f"TMDB fetch error: {str(e)}")
 
         all_tvmaze_episodes: List[Dict[str, Any]] = []
-        try:
-            tvmaze_show = await TVmazeClient.lookup_show(tvdb_id=show.tvdb_id, imdb_id=show.imdb_id, title=show.title)
-            if tvmaze_show:
-                show.tvmaze_id = tvmaze_show.get("id")
-                raw_tvmaze = await TVmazeClient.get_episodes(show.tvmaze_id)
-                for tv_ep in raw_tvmaze:
-                    all_tvmaze_episodes.append({"id": str(tv_ep.get("id")), "season": tv_ep.get("season"), "episode": tv_ep.get("number"), "title": tv_ep.get("name"), "overview": re.sub(r"<[^>]+>", "", tv_ep.get("summary") or ""), "air_date": tv_ep.get("airdate"), "raw": tv_ep})
-                await log(f"Retrieved {len(all_tvmaze_episodes)} total TVmaze episodes.")
-        except Exception as e: await log(f"TVmaze fetch error: {str(e)}")
+        if "tvmaze" in norm_sources:
+            try:
+                tvmaze_show = await TVmazeClient.lookup_show(tvdb_id=show.tvdb_id, imdb_id=show.imdb_id, title=show.title)
+                if tvmaze_show:
+                    show.tvmaze_id = tvmaze_show.get("id")
+                    raw_tvmaze = await TVmazeClient.get_episodes(show.tvmaze_id)
+                    for tv_ep in raw_tvmaze:
+                        all_tvmaze_episodes.append({"id": str(tv_ep.get("id")), "season": tv_ep.get("season"), "episode": tv_ep.get("number"), "title": tv_ep.get("name"), "overview": re.sub(r"<[^>]+>", "", tv_ep.get("summary") or ""), "air_date": tv_ep.get("airdate"), "raw": tv_ep})
+                    await log(f"Retrieved {len(all_tvmaze_episodes)} total TVmaze episodes.")
+            except Exception as e: await log(f"TVmaze fetch error: {str(e)}")
 
         all_omdb_episodes: List[Dict[str, Any]] = []
-        omdb_key = config.get("omdb_api_key")
-        if omdb_key and show.imdb_id:
-            try:
-                seasons = set(ep.season_number for ep in canonical_list if ep.season_number > 0)
-                for s in sorted(seasons):
-                    omdb_eps = await OMDbClient.get_season_episodes(omdb_key, show.imdb_id, s)
-                    for o_ep in omdb_eps:
-                        all_omdb_episodes.append({"id": o_ep.get("imdbID"), "season": s, "episode": int(o_ep.get("Episode", 0)), "title": o_ep.get("Title"), "overview": o_ep.get("Plot"), "air_date": o_ep.get("Released"), "raw": o_ep})
-                await log(f"Retrieved {len(all_omdb_episodes)} total OMDb episodes.")
-            except Exception as e:
-                await log(f"OMDb fetch error: {str(e)}")
+        if "omdb" in norm_sources:
+            omdb_key = config.get("omdb_api_key")
+            if omdb_key and show.imdb_id:
+                try:
+                    seasons = set(ep.season_number for ep in canonical_list if ep.season_number > 0)
+                    for s in sorted(seasons):
+                        omdb_eps = await OMDbClient.get_season_episodes(omdb_key, show.imdb_id, s)
+                        for o_ep in omdb_eps:
+                            all_omdb_episodes.append({"id": o_ep.get("imdbID"), "season": s, "episode": int(o_ep.get("Episode", 0)), "title": o_ep.get("Title"), "overview": o_ep.get("Plot"), "air_date": o_ep.get("Released"), "raw": o_ep})
+                    await log(f"Retrieved {len(all_omdb_episodes)} total OMDb episodes.")
+                except Exception as e:
+                    await log(f"OMDb fetch error: {str(e)}")
 
         # 5. Multi-Stage Matching for Selected Sources with Distributed Progress
         ollama_url = config.get("ollama_url", "http://localhost:11434")

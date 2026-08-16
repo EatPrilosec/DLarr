@@ -156,3 +156,39 @@ async def test_process_show_ingestion_no_scan():
             )
             assert show is not None
             assert show.title == "No Scan Show"
+
+
+@pytest.mark.asyncio
+async def test_process_show_ingestion_single_source_custom_scan():
+    s_id = random.randint(100000, 999999)
+    fake_series = {
+        "id": s_id,
+        "title": "Single Source Show",
+        "cleanTitle": "singlesource",
+        "overview": "Test",
+        "images": []
+    }
+    fake_episodes = [
+        {"id": s_id * 10, "seasonNumber": 1, "episodeNumber": 1, "title": "Ep 1", "overview": "Plot 1"}
+    ]
+
+    with patch("backend.app.services.sonarr_client.SonarrClient.get_series_detail", new_callable=AsyncMock) as mock_s, \
+         patch("backend.app.services.sonarr_client.SonarrClient.get_episodes", new_callable=AsyncMock) as mock_eps, \
+         patch("backend.app.services.tmdb_client.TMDBClient.find_by_external_id", new_callable=AsyncMock) as mock_tmdb_find, \
+         patch("backend.app.services.tvmaze_client.TVmazeClient.lookup_show", new_callable=AsyncMock) as mock_tvmaze:
+        mock_s.return_value = fake_series
+        mock_eps.return_value = fake_episodes
+        mock_tmdb_find.return_value = 99999
+        mock_tvmaze.return_value = None
+
+        async with AsyncSessionLocal() as db:
+            show = await MatchingEngine.process_show_ingestion(
+                db=db,
+                sonarr_series_id=s_id,
+                config={"sonarr_url": "http://mock", "sonarr_api_key": "mock", "tmdb_api_key": "mock_tmdb"},
+                scan_mode="custom",
+                selected_sources=["tmdb"]
+            )
+            assert show is not None
+            # TVmaze must NOT be queried when only tmdb is selected
+            mock_tvmaze.assert_not_called()
