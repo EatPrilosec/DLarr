@@ -134,13 +134,13 @@ class OllamaClient:
         cls,
         base_url: str,
         primary_model: str,
-        fallback_model: Optional[str],
-        user_prompt: str,
+        fallback_model: Optional[Any] = None,
+        user_prompt: str = "",
         system_prompt: Optional[str] = None
     ) -> Tuple[str, str]:
         """
         Executes query against primary_model with up to 2 attempts (retrying if blank or error).
-        If still blank or error, attempts fallback_model (with up to 2 attempts).
+        If still blank or error, iterates through fallback_models in order (each with up to 2 attempts).
         Returns: (response_text, model_used)
         """
         # 1. Primary Model (up to 2 attempts)
@@ -152,15 +152,22 @@ class OllamaClient:
             except Exception:
                 pass
 
-        # 2. Fallback Model (up to 2 attempts)
-        if fallback_model and fallback_model != primary_model:
-            for _ in range(2):
-                try:
-                    res = await cls.query_model_text(base_url, fallback_model, user_prompt, system_prompt)
-                    if res.strip():
-                        return res.strip(), fallback_model
-                except Exception:
-                    pass
+        # 2. Fallback Models (iterates sequentially)
+        fallbacks: List[str] = []
+        if isinstance(fallback_model, list):
+            fallbacks = [str(m).strip() for m in fallback_model if str(m).strip()]
+        elif isinstance(fallback_model, str) and fallback_model.strip():
+            fallbacks = [fallback_model.strip()]
+
+        for fb in fallbacks:
+            if fb and fb != primary_model:
+                for _ in range(2):
+                    try:
+                        res = await cls.query_model_text(base_url, fb, user_prompt, system_prompt)
+                        if res.strip():
+                            return res.strip(), fb
+                    except Exception:
+                        pass
 
         return "", primary_model
 

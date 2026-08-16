@@ -28,15 +28,37 @@ async def get_settings(db: AsyncSession = Depends(get_db)):
     
     max_jobs = int(data.get("max_concurrent_jobs", 1)) if str(data.get("max_concurrent_jobs", "")).isdigit() else 1
     max_ollama = int(data.get("max_concurrent_ollama_requests", 1)) if str(data.get("max_concurrent_ollama_requests", "")).isdigit() else 1
+    batch_size = int(data.get("ai_batch_size", 10)) if str(data.get("ai_batch_size", "")).isdigit() else 10
 
     # Ensure concurrency manager is synced with loaded settings
     concurrency_manager.update_limits(max_jobs, max_ollama)
 
+    # Parse fallback models
+    fallback_models: List[str] = []
+    raw_fallbacks = data.get("ollama_fallback_models")
+    if raw_fallbacks:
+        try:
+            parsed = json.loads(raw_fallbacks)
+            if isinstance(parsed, list):
+                fallback_models = [str(m).strip() for m in parsed if str(m).strip()]
+        except Exception:
+            fallback_models = [m.strip() for m in raw_fallbacks.split(",") if m.strip()]
+
+    if not fallback_models and data.get("ollama_fallback_model"):
+        fallback_models = [data["ollama_fallback_model"].strip()]
+
+    if not fallback_models:
+        fallback_models = ["Gemma-4-E2B-it-uncensored-GGUF:Q4_K_M"]
+
+    primary_model = data.get("ollama_primary_model", "gemma4:e2b")
+
     # Return with defaults
     return AppSettings(
         ollama_url=data.get("ollama_url", "http://localhost:11434"),
-        ollama_primary_model=data.get("ollama_primary_model", "llama3.1:8b"),
-        ollama_fallback_model=data.get("ollama_fallback_model", "mistral:7b"),
+        ollama_primary_model=primary_model,
+        ollama_fallback_models=fallback_models,
+        ollama_fallback_model=fallback_models[0],
+        ai_batch_size=max(1, batch_size),
         sonarr_url=data.get("sonarr_url", ""),
         sonarr_api_key=data.get("sonarr_api_key", ""),
         tmdb_api_key=data.get("tmdb_api_key", ""),
@@ -52,15 +74,25 @@ async def get_settings(db: AsyncSession = Depends(get_db)):
 
 @router.post("", response_model=AppSettings)
 async def update_settings(payload: AppSettings, db: AsyncSession = Depends(get_db)):
+    # Validate fallback models (never 0)
+    clean_fallbacks = [m.strip() for m in payload.ollama_fallback_models if m and m.strip()]
+    if not clean_fallbacks:
+        clean_fallbacks = ["Gemma-4-E2B-it-uncensored-GGUF:Q4_K_M"]
+    
+    payload.ollama_fallback_models = clean_fallbacks
+    payload.ollama_fallback_model = clean_fallbacks[0]
+    payload.ai_batch_size = max(1, payload.ai_batch_size)
+
     settings_dict = payload.model_dump()
     for k, v in settings_dict.items():
+        val_str = json.dumps(v) if isinstance(v, (list, dict)) else str(v)
         stmt = select(Setting).where(Setting.key == k)
         res = await db.execute(stmt)
         record = res.scalars().first()
         if record:
-            record.value = str(v)
+            record.value = val_str
         else:
-            db.add(Setting(key=k, value=str(v)))
+            db.add(Setting(key=k, value=val_str))
     await db.commit()
 
     # Dynamically update concurrency manager semaphores

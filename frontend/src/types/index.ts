@@ -2,6 +2,8 @@ export interface AppSettings {
   ollama_url: string;
   ollama_primary_model: string;
   ollama_fallback_model: string;
+  ollama_fallback_models?: string[];
+  ai_batch_size?: number;
   sonarr_url: string;
   sonarr_api_key: string;
   tmdb_api_key: string;

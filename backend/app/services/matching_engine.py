@@ -241,10 +241,14 @@ class MatchingEngine:
         if not matches_p or not fallback_model or fallback_model == primary_model:
             return matches_p
 
-        # 2. Query Fallback Model
+        # 2. Query Fallback Model (first available fallback model)
+        fb_to_use = fallback_model[0] if isinstance(fallback_model, list) and fallback_model else fallback_model
+        if not fb_to_use or fb_to_use == primary_model:
+            return matches_p
+
         resp_f, _ = await OllamaClient.query_with_retry_and_fallback(
             base_url=ollama_url,
-            primary_model=fallback_model,
+            primary_model=fb_to_use,
             fallback_model=None,
             user_prompt=prompt,
             system_prompt=system_prompt
@@ -259,21 +263,27 @@ class MatchingEngine:
     async def ai_batch_confirm_matches(
         ollama_url: str,
         primary_model: str,
-        fallback_model: Optional[str],
+        fallback_model: Optional[Any],
         show_title: str,
         source_name: str,
         batch_pairs: List[Tuple[Episode, Dict[str, Any]]]
     ) -> Tuple[Set[int], str]:
         """
-        Step 1A/1B/2B: 10-Episode Batch High-Context Confirmation Prompt
+        Step 1A/1B/2B: Batch High-Context Confirmation Prompt
         Prompts LLM to confirm comparisons with 'yes', or output comma-separated failed SxxEyy.
-        If primary model does not confirm all items, queries the fallback model on the remaining unconfirmed items.
+        If primary model does not confirm all items, iterates through fallback models on the remaining unconfirmed items.
         Returns: (confirmed_canonical_ids: Set[int], model_used: str)
         """
         if not batch_pairs:
             return set(), "NO_PAIRS"
         if not ollama_url:
             return set(ep.id for ep, _ in batch_pairs), "OLLAMA_DISABLED"
+
+        fallbacks: List[str] = []
+        if isinstance(fallback_model, list):
+            fallbacks = [str(m).strip() for m in fallback_model if str(m).strip()]
+        elif isinstance(fallback_model, str) and fallback_model.strip():
+            fallbacks = [fallback_model.strip()]
 
         async def _query_batch_single_model(model_name: str, pairs: List[Tuple[Episode, Dict[str, Any]]]) -> Tuple[Set[int], bool]:
             if not pairs:
@@ -351,14 +361,20 @@ class MatchingEngine:
         confirmed_ids, all_confirmed = await _query_batch_single_model(primary_model, batch_pairs)
         models_used = [primary_model]
 
-        # 2. If primary did not confirm all 10, query fallback model on remaining unconfirmed pairs
-        if not all_confirmed and fallback_model and fallback_model != primary_model:
-            remaining_pairs = [p for p in batch_pairs if p[0].id not in confirmed_ids]
-            if remaining_pairs:
-                fallback_confirmed, _ = await _query_batch_single_model(fallback_model, remaining_pairs)
-                if fallback_confirmed:
-                    confirmed_ids.update(fallback_confirmed)
-                    models_used.append(fallback_model)
+        # 2. If primary did not confirm all items, iterate through fallback models on remaining unconfirmed pairs
+        if not all_confirmed and fallbacks:
+            for fb in fallbacks:
+                if not fb or fb == primary_model:
+                    continue
+                remaining_pairs = [p for p in batch_pairs if p[0].id not in confirmed_ids]
+                if not remaining_pairs:
+                    break
+                fb_confirmed, _ = await _query_batch_single_model(fb, remaining_pairs)
+                if fb_confirmed:
+                    confirmed_ids.update(fb_confirmed)
+                    models_used.append(fb)
+                if len(confirmed_ids) == len(batch_pairs):
+                    break
 
         return confirmed_ids, "+".join(models_used)
 
@@ -366,7 +382,7 @@ class MatchingEngine:
     async def ai_search_candidates(
         ollama_url: str,
         primary_model: str,
-        fallback_model: Optional[str],
+        fallback_model: Optional[Any],
         show_title: str,
         canonical_ep: Episode,
         candidates: List[Dict[str, Any]],
@@ -382,21 +398,21 @@ class MatchingEngine:
         sonarr_s = canonical_ep.season_number if canonical_ep.season_number is not None else 0
         sonarr_e = canonical_ep.episode_number if canonical_ep.episode_number is not None else 0
         sonarr_title = canonical_ep.title or ""
-        sonarr_desc = canonical_ep.overview or "N/A"
+        sonarr_desc = (canonical_ep.overview or "")[:200]
         sonarr_date = canonical_ep.air_date or "N/A"
 
         cand_lines = []
-        for c in candidates[:35]:
+        for c in candidates:
             cs = c.get("season") if c.get("season") is not None else 0
             ce = c.get("episode") if c.get("episode") is not None else 0
             ct = c.get("title") or ""
-            cd = (c.get("overview") or "N/A")[:140]
+            cd = (c.get("overview") or "")[:120]
             cdate = c.get("air_date") or "N/A"
             cand_lines.append(
-                f"        S{cs:02d}E{ce:02d} from {source_name}\n"
-                f"            Title: {ct}\n"
-                f"            Description: {cd}\n"
-                f"            Air Date: {cdate}"
+                f"        {source_name} S{cs:02d}E{ce:02d}\n"
+                f"        match title: {ct}\n"
+                f"        match description: {cd}\n"
+                f"        air date: {cdate}"
             )
 
         cand_list_str = "\n\n".join(cand_lines)
@@ -445,17 +461,19 @@ class MatchingEngine:
         source_episodes: List[Dict[str, Any]],
         ollama_url: str,
         primary_model: str,
-        fallback_model: Optional[str],
+        fallback_model: Optional[Any],
+        batch_size: int = 10,
         progress_range: Tuple[float, float] = (0.0, 100.0),
         progress_cb: Optional[Callable[[float, str], Awaitable[None]]] = None,
         log_cb: Optional[Callable[[str], Awaitable[None]]] = None
     ):
         """
-        Executes Step 0, Step 1A, Step 1B, Step 2A, Step 2B, Step 2C for a single source with granular progress updates.
+        Executes Step 0, Step 1A, Step 1B, Step 2A, Step 2B, Step 2C for a single source with granular progress updates and configurable batch size.
         """
         from backend.app.services.concurrency_manager import concurrency_manager
 
         p_start, p_end = progress_range
+        batch_size = max(1, batch_size)
 
         async def log(msg: str):
             if log_cb:
@@ -488,14 +506,15 @@ class MatchingEngine:
         )
 
         for ep in canonical_episodes:
-            if (ep.season_number, ep.episode_number) in no_match_pairs:
+            se_key = (ep.season_number, ep.episode_number)
+            if se_key in no_match_pairs:
                 mapped_canonical_ids.add(ep.id)
                 meta = EpisodeSourceMetadata(
                     episode_id=ep.id,
                     show_id=show.id,
                     source_name=source_name.lower(),
                     source_show_id=str(show.tmdb_id if source_name == 'TMDB' else (show.tvmaze_id if source_name == 'TVmaze' else show.imdb_id)),
-                    source_episode_id=f"no_match_{ep.id}",
+                    source_episode_id=None,
                     source_season_number=None,
                     source_episode_number=None,
                     title="No Matching Episode in Source",
@@ -536,11 +555,11 @@ class MatchingEngine:
                         proposed_1a.append((ep, cand))
                         break
 
-        total_1a_batches = max(1, (len(proposed_1a) + 9) // 10)
-        await log(f"[{source_name}] Step 1A: Found {len(proposed_1a)} strict 1:1 candidates. Confirming in {total_1a_batches} batches of 10...")
+        total_1a_batches = max(1, (len(proposed_1a) + batch_size - 1) // batch_size)
+        await log(f"[{source_name}] Step 1A: Found {len(proposed_1a)} strict 1:1 candidates. Confirming in {total_1a_batches} batches of {batch_size}...")
 
-        for b_idx, i in enumerate(range(0, len(proposed_1a), 10), 1):
-            batch = proposed_1a[i:i+10]
+        for b_idx, i in enumerate(range(0, len(proposed_1a), batch_size), 1):
+            batch = proposed_1a[i:i+batch_size]
             first_ep = batch[0][0]
             last_ep = batch[-1][0]
             frac = 0.10 + 0.30 * (b_idx / total_1a_batches)
@@ -600,11 +619,11 @@ class MatchingEngine:
                     proposed_1b.append((ep, cand))
                     break
 
-        total_1b_batches = max(1, (len(proposed_1b) + 9) // 10)
+        total_1b_batches = max(1, (len(proposed_1b) + batch_size - 1) // batch_size)
         await log(f"[{source_name}] Step 1B: Found {len(proposed_1b)} loose candidate matches. Confirming in {total_1b_batches} batches...")
 
-        for b_idx, i in enumerate(range(0, len(proposed_1b), 10), 1):
-            batch = proposed_1b[i:i+10]
+        for b_idx, i in enumerate(range(0, len(proposed_1b), batch_size), 1):
+            batch = proposed_1b[i:i+batch_size]
             frac = 0.40 + 0.20 * (b_idx / total_1b_batches)
             await update_progress(frac, f"Step 1B: Batch {b_idx}/{total_1b_batches}")
 
@@ -675,11 +694,11 @@ class MatchingEngine:
 
             # Batch confirm Step 2A proposals (Step 2B)
             if proposed_2a:
-                total_2b_batches = max(1, (len(proposed_2a) + 9) // 10)
-                await log(f"[{source_name}] Step 2B: Confirming {len(proposed_2a)} search proposals in {total_2b_batches} batches...")
+                total_2b_batches = max(1, (len(proposed_2a) + batch_size - 1) // batch_size)
+                await log(f"[{source_name}] Step 2B: Confirming {len(proposed_2a)} search proposals in {total_2b_batches} batches of {batch_size}...")
 
-                for b_idx, i in enumerate(range(0, len(proposed_2a), 10), 1):
-                    batch = proposed_2a[i:i+10]
+                for b_idx, i in enumerate(range(0, len(proposed_2a), batch_size), 1):
+                    batch = proposed_2a[i:i+batch_size]
                     frac = 0.85 + 0.15 * (b_idx / total_2b_batches)
                     await update_progress(frac, f"Step 2B: Confirming search batch {b_idx}/{total_2b_batches}")
 
@@ -715,7 +734,7 @@ class MatchingEngine:
                             )
                             db.add(meta)
 
-                    await log(f"[{source_name}] Step 2B: Batch {b_idx}/{total_2b_batches} -> AI confirmed {n_conf}/{len(batch)} search matches ({model_used}).")
+                    await log(f"[{source_name}] Step 2B: Batch {b_idx}/{total_2b_batches} -> AI confirmed {n_conf}/{len(batch)} proposals ({model_used}).")
 
                 await db.commit()
 
@@ -926,8 +945,17 @@ class MatchingEngine:
 
         # 5. Multi-Stage Matching for Selected Sources with Distributed Progress
         ollama_url = config.get("ollama_url", "http://localhost:11434")
-        primary_model = config.get("ollama_primary_model", "gemma4:e4b")
-        fallback_model = config.get("ollama_fallback_model", "gemma4-obliterated:latest")
+        primary_model = config.get("ollama_primary_model", "gemma4:e2b")
+        
+        fallback_models = config.get("ollama_fallback_models")
+        if not fallback_models or not isinstance(fallback_models, list):
+            if config.get("ollama_fallback_model"):
+                fallback_models = [config.get("ollama_fallback_model")]
+            else:
+                fallback_models = ["Gemma-4-E2B-it-uncensored-GGUF:Q4_K_M"]
+
+        batch_size = int(config.get("ai_batch_size", 10)) if str(config.get("ai_batch_size", "")).isdigit() else 10
+        batch_size = max(1, batch_size)
 
         norm_sources = [s.lower().strip() for s in (selected_sources or ["tmdb", "tvmaze", "omdb"])]
 
@@ -959,7 +987,8 @@ class MatchingEngine:
                 source_episodes=s_eps,
                 ollama_url=ollama_url,
                 primary_model=primary_model,
-                fallback_model=fallback_model,
+                fallback_model=fallback_models,
+                batch_size=batch_size,
                 progress_range=(s_p_start, s_p_end),
                 progress_cb=update_job_progress,
                 log_cb=log

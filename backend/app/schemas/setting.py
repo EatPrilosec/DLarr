@@ -11,8 +11,12 @@ class SettingItem(BaseModel):
 class AppSettings(BaseModel):
     # Ollama
     ollama_url: str = "http://localhost:11434"
-    ollama_primary_model: str = "llama3.1:8b"
-    ollama_fallback_model: str = "mistral:7b"
+    ollama_primary_model: str = "gemma4:e2b"
+    ollama_fallback_models: List[str] = ["Gemma-4-E2B-it-uncensored-GGUF:Q4_K_M"]
+    ollama_fallback_model: str = "Gemma-4-E2B-it-uncensored-GGUF:Q4_K_M"  # backward compat
+    
+    # Matching Engine Configuration
+    ai_batch_size: int = 10
     
     # Sonarr
     sonarr_url: str = ""
