@@ -205,15 +205,15 @@ class MatchingEngine:
         if not ollama_url:
             return True, "OLLAMA_DISABLED"
 
-        sonarr_s = canonical_ep.season_number
-        sonarr_e = canonical_ep.episode_number
-        sonarr_title = canonical_ep.title
+        sonarr_s = canonical_ep.season_number if canonical_ep.season_number is not None else 0
+        sonarr_e = canonical_ep.episode_number if canonical_ep.episode_number is not None else 0
+        sonarr_title = canonical_ep.title or ""
         sonarr_desc = canonical_ep.overview or "N/A"
         sonarr_date = canonical_ep.air_date or "N/A"
 
-        cand_s = candidate.get("season", 0)
-        cand_e = candidate.get("episode", 0)
-        cand_title = candidate.get("title", "")
+        cand_s = candidate.get("season") if candidate.get("season") is not None else 0
+        cand_e = candidate.get("episode") if candidate.get("episode") is not None else 0
+        cand_title = candidate.get("title") or ""
         cand_desc = candidate.get("overview") or "N/A"
         cand_date = candidate.get("air_date") or "N/A"
 
@@ -270,17 +270,17 @@ class MatchingEngine:
         if not ollama_url or not candidates:
             return None, "NO_CANDIDATES"
 
-        sonarr_s = canonical_ep.season_number
-        sonarr_e = canonical_ep.episode_number
-        sonarr_title = canonical_ep.title
+        sonarr_s = canonical_ep.season_number if canonical_ep.season_number is not None else 0
+        sonarr_e = canonical_ep.episode_number if canonical_ep.episode_number is not None else 0
+        sonarr_title = canonical_ep.title or ""
         sonarr_desc = canonical_ep.overview or "N/A"
         sonarr_date = canonical_ep.air_date or "N/A"
 
         cand_lines = []
         for c in candidates[:30]:
-            cs = c.get("season", 0)
-            ce = c.get("episode", 0)
-            ct = c.get("title", "")
+            cs = c.get("season") if c.get("season") is not None else 0
+            ce = c.get("episode") if c.get("episode") is not None else 0
+            ct = c.get("title") or ""
             cd = (c.get("overview") or "N/A")[:180]
             cdate = c.get("air_date") or "N/A"
             cand_lines.append(
