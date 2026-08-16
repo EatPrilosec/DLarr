@@ -23,12 +23,24 @@ def test_normalize_title():
 def test_extract_title_aliases():
     aliases = extract_title_aliases("Racing The Storm (American Airlines, Flight 1420)")
     assert "Racing The Storm (American Airlines, Flight 1420)" in aliases
-    assert "Racing The Storm" in aliases
-    assert "American Airlines, Flight 1420" in aliases
+    assert "Racing The Storm" in aliases  # Parentheses omitted entirely
+    assert "American Airlines, Flight 1420" in aliases  # Content inside parentheses as alternate title
 
-    match, method, conf = is_title_match("Racing The Storm (American Airlines, Flight 1420)", "Racing the Storm")
+    # Match when comparing omitted parentheses version
+    match, method, conf = is_title_match("Deadly Delay (Disaster on the Potomac)", "Deadly Delay")
     assert match is True
     assert method == "EXACT_TITLE"
+
+    # Match when comparing what is INSIDE parentheses
+    match2, method2, conf2 = is_title_match("Deadly Delay (Disaster on the Potomac)", "Disaster on the Potomac")
+    assert match2 is True
+    assert method2 == "EXACT_TITLE"
+
+    # Match with brackets and colons
+    aliases_bracket = extract_title_aliases("Mayday [Special Report]: Getting Out Alive")
+    assert "Mayday [Special Report]: Getting Out Alive" in aliases_bracket
+    assert "Special Report" in aliases_bracket
+    assert "Mayday : Getting Out Alive" in aliases_bracket or "Mayday" in aliases_bracket
 
 
 def test_token_sorted_and_fuzzy_title_match():

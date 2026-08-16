@@ -34,26 +34,31 @@ def token_sorted_title(title: Optional[str]) -> str:
 
 def extract_title_aliases(title: Optional[str]) -> List[str]:
     """
-    Extracts base title, parenthetical text, and subtitle segments for resilient matching.
-    Example: 'Racing The Storm (American Airlines, Flight 1420)' ->
-    ['Racing The Storm (American Airlines, Flight 1420)', 'Racing The Storm', 'American Airlines, Flight 1420']
+    Extracts base title, parenthetical text (inside parentheses tested separately as alternate title),
+    and title with parentheses omitted entirely.
+    Example: 'Deadly Delay (Disaster on the Potomac)' ->
+    ['Deadly Delay (Disaster on the Potomac)', 'Deadly Delay', 'Disaster on the Potomac']
     """
     if not title:
         return []
     aliases = [title.strip()]
 
-    # 1. Parenthetical extraction: "Title (Subtitle)"
-    parentheses = re.findall(r"\((.*?)\)", title)
-    base_no_parens = re.sub(r"\(.*?\)", "", title).strip()
-    if base_no_parens and base_no_parens not in aliases:
-        aliases.append(base_no_parens)
-    for p in parentheses:
+    # 1. Parentheses (), brackets [], braces {} extraction
+    # A: Extract what is INSIDE parentheses/brackets separately as an alternate title
+    inside_parens = re.findall(r"[\(\[\{](.*?)[\)\]\}]", title)
+    for p in inside_parens:
         p_clean = p.strip()
         if p_clean and p_clean not in aliases:
             aliases.append(p_clean)
 
-    # 2. Colon / Hyphen separators: "Title: Subtitle" or "Title - Subtitle"
-    for sep in [":", " - "]:
+    # B: Omit parentheses/brackets entirely from the title
+    base_no_parens = re.sub(r"[\(\[\{].*?[\)\]\}]", "", title)
+    base_no_parens = re.sub(r"\s+", " ", base_no_parens).strip(" -:,./")
+    if base_no_parens and base_no_parens not in aliases:
+        aliases.append(base_no_parens)
+
+    # 2. Colon / Hyphen / Slash separators: "Title: Subtitle", "Title - Subtitle", "Title / Subtitle"
+    for sep in [":", " - ", " / "]:
         if sep in title:
             parts = title.split(sep)
             for part in parts:
@@ -405,6 +410,8 @@ class MatchingEngine:
         sonarr_s = canonical_ep.season_number if canonical_ep.season_number is not None else 0
         sonarr_e = canonical_ep.episode_number if canonical_ep.episode_number is not None else 0
         sonarr_title = canonical_ep.title or ""
+        sonarr_aliases = extract_title_aliases(canonical_ep.title)
+        sonarr_alias_info = f"\n        Alternate Titles: {', '.join(sonarr_aliases[1:])}" if len(sonarr_aliases) > 1 else ""
         sonarr_desc = (canonical_ep.overview or "")[:200]
         sonarr_date = canonical_ep.air_date or "N/A"
 
@@ -413,11 +420,13 @@ class MatchingEngine:
             cs = c.get("season") if c.get("season") is not None else 0
             ce = c.get("episode") if c.get("episode") is not None else 0
             ct = c.get("title") or ""
+            c_aliases = extract_title_aliases(ct)
+            c_alias_info = f"\n        alternate titles: {', '.join(c_aliases[1:])}" if len(c_aliases) > 1 else ""
             cd = (c.get("overview") or "")[:120]
             cdate = c.get("air_date") or "N/A"
             cand_lines.append(
                 f"        {source_name} S{cs:02d}E{ce:02d}\n"
-                f"        match title: {ct}\n"
+                f"        match title: {ct}{c_alias_info}\n"
                 f"        match description: {cd}\n"
                 f"        air date: {cdate}"
             )
@@ -428,7 +437,7 @@ class MatchingEngine:
             f"you are being used to programatically find an episode matching of the show {show_title} from {source_name} to sonarr's episode for {show_title}\n\n"
             f"    here is all the episode info from sonarr:\n\n"
             f"        Season / Episode: S{sonarr_s:02d}E{sonarr_e:02d}\n"
-            f"        Title: {sonarr_title}\n"
+            f"        Title: {sonarr_title}{sonarr_alias_info}\n"
             f"        Description: {sonarr_desc}\n"
             f"        Air Date: {sonarr_date}\n\n"
             f"    here is list of each episode and all the episode info from the suspected match:\n\n"

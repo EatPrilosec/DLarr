@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Activity as ActivityIcon, CheckCircle2, XCircle, Clock, Loader2, RefreshCw, Terminal, StopCircle, Ban } from 'lucide-react';
 import { api } from '../services/api';
 import { Job } from '../types';
@@ -13,6 +13,9 @@ export const Activity: React.FC<ActivityProps> = ({ activeJobId }) => {
   const [selectedJob, setSelectedJob] = useState<Job | null>(null);
   const [liveLogs, setLiveLogs] = useState<string>('');
 
+  const logsContainerRef = useRef<HTMLDivElement>(null);
+  const shouldStickToBottomRef = useRef<boolean>(true);
+
   useEffect(() => {
     loadJobs();
   }, []);
@@ -23,6 +26,31 @@ export const Activity: React.FC<ActivityProps> = ({ activeJobId }) => {
       if (j) setSelectedJob(j);
     }
   }, [activeJobId, jobs]);
+
+  // Handle user scrolling inside logs container
+  const handleLogsScroll = () => {
+    if (logsContainerRef.current) {
+      const { scrollTop, scrollHeight, clientHeight } = logsContainerRef.current;
+      // If user is within 35px of the bottom, keep following output
+      const isAtBottom = scrollHeight - scrollTop - clientHeight <= 35;
+      shouldStickToBottomRef.current = isAtBottom;
+    }
+  };
+
+  // Follow output when new logs arrive (if scrolled to bottom)
+  useEffect(() => {
+    if (shouldStickToBottomRef.current && logsContainerRef.current) {
+      logsContainerRef.current.scrollTop = logsContainerRef.current.scrollHeight;
+    }
+  }, [liveLogs]);
+
+  // Reset to bottom when selecting a different job
+  useEffect(() => {
+    shouldStickToBottomRef.current = true;
+    if (logsContainerRef.current) {
+      logsContainerRef.current.scrollTop = logsContainerRef.current.scrollHeight;
+    }
+  }, [selectedJob?.id]);
 
   // Connect to SSE for running jobs
   useEffect(() => {
@@ -259,7 +287,11 @@ export const Activity: React.FC<ActivityProps> = ({ activeJobId }) => {
               </div>
 
               {/* Console Logs Output */}
-              <div className="flex-1 bg-dark-950 rounded-xl p-4 border border-dark-800 overflow-y-auto font-mono text-xs text-slate-300 leading-relaxed space-y-1">
+              <div
+                ref={logsContainerRef}
+                onScroll={handleLogsScroll}
+                className="flex-1 bg-dark-950 rounded-xl p-4 border border-dark-800 overflow-y-auto font-mono text-xs text-slate-300 leading-relaxed space-y-1"
+              >
                 <div className="flex items-center space-x-2 text-slate-500 pb-2 border-b border-dark-800 mb-2">
                   <Terminal className="w-3.5 h-3.5" />
                   <span className="text-[11px]">Execution Output</span>
