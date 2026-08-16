@@ -414,26 +414,37 @@ class MatchingEngine:
         ollama_url: str,
         primary_model: str,
         fallback_model: Optional[str],
+        progress_range: Tuple[float, float] = (0.0, 100.0),
+        progress_cb: Optional[Callable[[float, str], Awaitable[None]]] = None,
         log_cb: Optional[Callable[[str], Awaitable[None]]] = None
     ):
         """
-        Executes Step 0, Step 1A, Step 1B, Step 2A, Step 2B, Step 2C for a single source.
+        Executes Step 0, Step 1A, Step 1B, Step 2A, Step 2B, Step 2C for a single source with granular progress updates.
         """
         from backend.app.services.concurrency_manager import concurrency_manager
+
+        p_start, p_end = progress_range
 
         async def log(msg: str):
             if log_cb:
                 await log_cb(msg)
 
+        async def update_progress(fraction: float, msg: str):
+            pct = round(p_start + fraction * (p_end - p_start), 1)
+            if progress_cb:
+                await progress_cb(pct, msg)
+            if log_cb:
+                await log_cb(f"[{source_name} ({pct}%)] {msg}")
+
         if not source_episodes:
-            await log(f"[{source_name}] No external episodes available to match.")
+            await log(f"[{source_name}] No external episodes available in source index.")
             return
 
         mapped_source_keys: Set[Tuple[int, int]] = set()
         mapped_canonical_ids: Set[int] = set()
 
-        # Step 0: AI No Match Marking
-        await log(f"[{source_name}] Step 0: Checking for non-existent episodes (source count: {len(source_episodes)} vs Sonarr: {len(canonical_episodes)})...")
+        # Step 0: AI No Match Marking (0% -> 10% of source allocation)
+        await update_progress(0.02, f"Step 0: Checking for non-existent episodes ({len(source_episodes)} {source_name} vs {len(canonical_episodes)} Sonarr)...")
         no_match_pairs = await cls.ai_step0_detect_no_match(
             ollama_url=ollama_url,
             primary_model=primary_model,
@@ -465,11 +476,11 @@ class MatchingEngine:
                 db.add(meta)
 
         if no_match_pairs:
-            await log(f"[{source_name}] Step 0: Marked {len(no_match_pairs)} episodes as NO_MATCH.")
+            await log(f"[{source_name}] Step 0: Marked {len(no_match_pairs)} episodes as confirmed absent (NO_MATCH).")
+        await update_progress(0.10, f"Step 0 Complete: {len(no_match_pairs)} episodes marked NO_MATCH.")
 
-        # Step 1A: Strict 1:1 Title Matching
-        await log(f"[{source_name}] Step 1A: Running strict title matching across entire source repository...")
-        # Map normalized title -> candidate
+        # Step 1A: Strict 1:1 Title Matching (10% -> 40% of source allocation)
+        await update_progress(0.12, "Step 1A: Scanning entire source index for 1:1 exact title matches...")
         source_by_strict_title: Dict[str, List[Dict[str, Any]]] = {}
         for cand in source_episodes:
             t = cand.get("title")
@@ -493,9 +504,16 @@ class MatchingEngine:
                         proposed_1a.append((ep, cand))
                         break
 
-        # Batch confirm 1A in 10-episode groups
-        for i in range(0, len(proposed_1a), 10):
+        total_1a_batches = max(1, (len(proposed_1a) + 9) // 10)
+        await log(f"[{source_name}] Step 1A: Found {len(proposed_1a)} strict 1:1 candidates. Confirming in {total_1a_batches} batches of 10...")
+
+        for b_idx, i in enumerate(range(0, len(proposed_1a), 10), 1):
             batch = proposed_1a[i:i+10]
+            first_ep = batch[0][0]
+            last_ep = batch[-1][0]
+            frac = 0.10 + 0.30 * (b_idx / total_1a_batches)
+            await update_progress(frac, f"Step 1A: Batch {b_idx}/{total_1a_batches} (S{first_ep.season_number}E{first_ep.episode_number} - S{last_ep.season_number}E{last_ep.episode_number})")
+
             confirmed_ids, model_used = await cls.ai_batch_confirm_matches(
                 ollama_url=ollama_url,
                 primary_model=primary_model,
@@ -504,8 +522,10 @@ class MatchingEngine:
                 source_name=source_name,
                 batch_pairs=batch
             )
+            n_conf = 0
             for ep, cand in batch:
                 if ep.id in confirmed_ids:
+                    n_conf += 1
                     ckey = (cand.get("season") or 0, cand.get("episode") or 0)
                     mapped_source_keys.add(ckey)
                     mapped_canonical_ids.add(ep.id)
@@ -526,11 +546,13 @@ class MatchingEngine:
                     )
                     db.add(meta)
 
-        await db.commit()
-        await log(f"[{source_name}] Step 1A: Confirmed {len(mapped_canonical_ids)} strict matches.")
+            await log(f"[{source_name}] Step 1A: Batch {b_idx}/{total_1a_batches} -> AI confirmed {n_conf}/{len(batch)} matches ({model_used}).")
 
-        # Step 1B: Loose Title Matching (Punctuation & Parentheticals)
-        await log(f"[{source_name}] Step 1B: Running loose / parenthetical title matching...")
+        await db.commit()
+        await update_progress(0.40, f"Step 1A Complete: {len(mapped_canonical_ids)} strict matches saved.")
+
+        # Step 1B: Loose Title Matching (40% -> 60% of source allocation)
+        await update_progress(0.42, "Step 1B: Scanning remaining unmapped episodes for loose / parenthetical matches...")
         unmapped_source_eps = [c for c in source_episodes if (c.get("season") or 0, c.get("episode") or 0) not in mapped_source_keys]
         proposed_1b: List[Tuple[Episode, Dict[str, Any]]] = []
 
@@ -546,9 +568,14 @@ class MatchingEngine:
                     proposed_1b.append((ep, cand))
                     break
 
-        # Batch confirm 1B in 10-episode groups
-        for i in range(0, len(proposed_1b), 10):
+        total_1b_batches = max(1, (len(proposed_1b) + 9) // 10)
+        await log(f"[{source_name}] Step 1B: Found {len(proposed_1b)} loose candidate matches. Confirming in {total_1b_batches} batches...")
+
+        for b_idx, i in enumerate(range(0, len(proposed_1b), 10), 1):
             batch = proposed_1b[i:i+10]
+            frac = 0.40 + 0.20 * (b_idx / total_1b_batches)
+            await update_progress(frac, f"Step 1B: Batch {b_idx}/{total_1b_batches}")
+
             confirmed_ids, model_used = await cls.ai_batch_confirm_matches(
                 ollama_url=ollama_url,
                 primary_model=primary_model,
@@ -557,8 +584,10 @@ class MatchingEngine:
                 source_name=source_name,
                 batch_pairs=batch
             )
+            n_conf = 0
             for ep, cand in batch:
                 if ep.id in confirmed_ids:
+                    n_conf += 1
                     ckey = (cand.get("season") or 0, cand.get("episode") or 0)
                     mapped_source_keys.add(ckey)
                     mapped_canonical_ids.add(ep.id)
@@ -579,19 +608,23 @@ class MatchingEngine:
                     )
                     db.add(meta)
 
-        await db.commit()
-        await log(f"[{source_name}] Step 1B: Confirmed {len(mapped_canonical_ids)} total matches.")
+            await log(f"[{source_name}] Step 1B: Batch {b_idx}/{total_1b_batches} -> AI confirmed {n_conf}/{len(batch)} loose matches ({model_used}).")
 
-        # Step 2A & 2B: AI Candidate Search & Batch Confirmation
+        await db.commit()
+        await update_progress(0.60, f"Step 1B Complete: {len(mapped_canonical_ids)} total matches saved.")
+
+        # Step 2A & 2B: AI Candidate Search & Batch Confirmation (60% -> 100% of source allocation)
         remaining_unmapped_sonarr = [ep for ep in canonical_episodes if ep.id not in mapped_canonical_ids]
         if remaining_unmapped_sonarr:
-            await log(f"[{source_name}] Step 2A: Searching remaining {len(remaining_unmapped_sonarr)} unmapped episodes with LLM search...")
+            await update_progress(0.62, f"Step 2A: Running LLM candidate search across {len(remaining_unmapped_sonarr)} unmapped episodes...")
             remaining_pool = [c for c in source_episodes if (c.get("season") or 0, c.get("episode") or 0) not in mapped_source_keys]
-
             source_index = SourceIndex(source_name, remaining_pool)
             proposed_2a: List[Tuple[Episode, Dict[str, Any]]] = []
 
-            for ep in remaining_unmapped_sonarr:
+            for ep_idx, ep in enumerate(remaining_unmapped_sonarr, 1):
+                frac = 0.60 + 0.25 * (ep_idx / len(remaining_unmapped_sonarr))
+                await update_progress(frac, f"Step 2A: Searching ep {ep_idx}/{len(remaining_unmapped_sonarr)}: S{ep.season_number}E{ep.episode_number} '{ep.title}'")
+
                 se_res, _ = await cls.ai_search_candidates(
                     ollama_url=ollama_url,
                     primary_model=primary_model,
@@ -606,12 +639,18 @@ class MatchingEngine:
                     cand = source_index.get_by_season_episode(s_num, e_num)
                     if cand:
                         proposed_2a.append((ep, cand))
+                        await log(f"[{source_name}] Step 2A: S{ep.season_number}E{ep.episode_number} -> Suggested S{s_num}E{e_num} '{cand.get('title')}'")
 
             # Batch confirm Step 2A proposals (Step 2B)
             if proposed_2a:
-                await log(f"[{source_name}] Step 2B: Confirming {len(proposed_2a)} search proposals in 10-episode batches...")
-                for i in range(0, len(proposed_2a), 10):
+                total_2b_batches = max(1, (len(proposed_2a) + 9) // 10)
+                await log(f"[{source_name}] Step 2B: Confirming {len(proposed_2a)} search proposals in {total_2b_batches} batches...")
+
+                for b_idx, i in enumerate(range(0, len(proposed_2a), 10), 1):
                     batch = proposed_2a[i:i+10]
+                    frac = 0.85 + 0.15 * (b_idx / total_2b_batches)
+                    await update_progress(frac, f"Step 2B: Confirming search batch {b_idx}/{total_2b_batches}")
+
                     confirmed_ids, model_used = await cls.ai_batch_confirm_matches(
                         ollama_url=ollama_url,
                         primary_model=primary_model,
@@ -620,8 +659,10 @@ class MatchingEngine:
                         source_name=source_name,
                         batch_pairs=batch
                     )
+                    n_conf = 0
                     for ep, cand in batch:
                         if ep.id in confirmed_ids:
+                            n_conf += 1
                             ckey = (cand.get("season") or 0, cand.get("episode") or 0)
                             mapped_source_keys.add(ckey)
                             mapped_canonical_ids.add(ep.id)
@@ -642,9 +683,12 @@ class MatchingEngine:
                             )
                             db.add(meta)
 
+                    await log(f"[{source_name}] Step 2B: Batch {b_idx}/{total_2b_batches} -> AI confirmed {n_conf}/{len(batch)} search matches ({model_used}).")
+
                 await db.commit()
 
-        await log(f"[{source_name}] Completed multi-stage matching pass ({len(mapped_canonical_ids)}/{len(canonical_episodes)} mapped).")
+        unmapped_final = len(canonical_episodes) - len(mapped_canonical_ids)
+        await update_progress(1.0, f"Completed: {len(mapped_canonical_ids)}/{len(canonical_episodes)} mapped ({unmapped_final} unmapped).")
 
     @classmethod
     async def process_show_ingestion(
@@ -655,20 +699,28 @@ class MatchingEngine:
         job: Optional[Job] = None,
     ) -> Show:
         """
-        Full show ingestion orchestrator executing the Multi-Stage Batch & Search Matching Pipeline.
+        Full show ingestion orchestrator executing the Multi-Stage Batch & Search Matching Pipeline with continuous live progress tracking.
         """
         from backend.app.services.concurrency_manager import concurrency_manager
 
         async def log(msg: str):
             if job:
                 job.logs = (job.logs or "") + f"\n{msg}"
-                job.message = msg[:250]
                 try:
                     await db.commit()
                 except Exception:
                     pass
 
-        await log(f"Starting multi-stage ingestion for Sonarr series ID {sonarr_series_id}...")
+        async def update_job_progress(progress_val: float, message_val: str):
+            if job:
+                job.progress = progress_val
+                job.message = message_val[:250]
+                try:
+                    await db.commit()
+                except Exception:
+                    pass
+
+        await update_job_progress(2.0, f"Fetching show metadata from Sonarr (Series ID: {sonarr_series_id})...")
 
         # 1. Fetch from Sonarr
         sonarr_url = config.get("sonarr_url")
@@ -722,6 +774,8 @@ class MatchingEngine:
             show.tmdb_id = series_data.get("tmdbId") or show.tmdb_id
             await db.flush()
 
+        await update_job_progress(5.0, f"Initialized show '{show.title}' with {len(episodes_data)} canonical episodes.")
+
         # 3. Create or update canonical Episodes
         episodes_map: Dict[int, Episode] = {}
         for ep_data in episodes_data:
@@ -773,6 +827,7 @@ class MatchingEngine:
                 db.add(sonarr_meta)
 
         await db.commit()
+        await update_job_progress(8.0, "Fetching external repositories (TMDB, TVmaze, OMDb)...")
 
         # 4. Fetch External Sources
         all_tmdb_episodes: List[Dict[str, Any]] = []
@@ -787,6 +842,7 @@ class MatchingEngine:
                         eps = await TMDBClient.get_season_episodes(tmdb_key, show.tmdb_id, s)
                         for t_ep in eps:
                             all_tmdb_episodes.append({"id": str(t_ep.get("id")), "season": t_ep.get("season_number"), "episode": t_ep.get("episode_number"), "title": t_ep.get("name"), "overview": t_ep.get("overview"), "air_date": t_ep.get("air_date"), "raw": t_ep})
+                    await log(f"Retrieved {len(all_tmdb_episodes)} total TMDB episodes.")
             except Exception as e: await log(f"TMDB fetch error: {str(e)}")
 
         all_tvmaze_episodes: List[Dict[str, Any]] = []
@@ -797,6 +853,7 @@ class MatchingEngine:
                 raw_tvmaze = await TVmazeClient.get_episodes(show.tvmaze_id)
                 for tv_ep in raw_tvmaze:
                     all_tvmaze_episodes.append({"id": str(tv_ep.get("id")), "season": tv_ep.get("season"), "episode": tv_ep.get("number"), "title": tv_ep.get("name"), "overview": re.sub(r"<[^>]+>", "", tv_ep.get("summary") or ""), "air_date": tv_ep.get("airdate"), "raw": tv_ep})
+                await log(f"Retrieved {len(all_tvmaze_episodes)} total TVmaze episodes.")
         except Exception as e: await log(f"TVmaze fetch error: {str(e)}")
 
         all_omdb_episodes: List[Dict[str, Any]] = []
@@ -812,44 +869,49 @@ class MatchingEngine:
             except Exception as e:
                 await log(f"OMDb fetch error: {str(e)}")
 
-        # 5. Multi-Stage Matching for Each Source
+        # 5. Multi-Stage Matching for Each Source with Distributed Progress
         ollama_url = config.get("ollama_url", "http://localhost:11434")
         primary_model = config.get("ollama_primary_model", "gemma4:e4b")
         fallback_model = config.get("ollama_fallback_model", "gemma4-obliterated:latest")
         canonical_list = list(episodes_map.values())
 
-        if job:
-            job.progress = 20.0
-            await db.commit()
-
-        # Match TMDB
+        active_sources = []
         if all_tmdb_episodes:
-            if job and concurrency_manager.is_cancelled(job.id):
-                return show
-            await cls.match_source_multistage(db=db, show=show, canonical_episodes=canonical_list, source_name="TMDB", source_episodes=all_tmdb_episodes, ollama_url=ollama_url, primary_model=primary_model, fallback_model=fallback_model, log_cb=log)
-
-        if job:
-            job.progress = 45.0
-            await db.commit()
-
-        # Match TVmaze
+            active_sources.append(("TMDB", all_tmdb_episodes))
         if all_tvmaze_episodes:
-            if job and concurrency_manager.is_cancelled(job.id):
-                return show
-            await cls.match_source_multistage(db=db, show=show, canonical_episodes=canonical_list, source_name="TVmaze", source_episodes=all_tvmaze_episodes, ollama_url=ollama_url, primary_model=primary_model, fallback_model=fallback_model, log_cb=log)
-
-        if job:
-            job.progress = 70.0
-            await db.commit()
-
-        # Match OMDb
+            active_sources.append(("TVmaze", all_tvmaze_episodes))
         if all_omdb_episodes:
+            active_sources.append(("OMDb", all_omdb_episodes))
+
+        start_pct = 10.0
+        end_pct = 92.0
+        total_range = end_pct - start_pct
+        source_slice = total_range / max(1, len(active_sources))
+
+        for idx, (s_name, s_eps) in enumerate(active_sources):
             if job and concurrency_manager.is_cancelled(job.id):
                 return show
-            await cls.match_source_multistage(db=db, show=show, canonical_episodes=canonical_list, source_name="OMDb", source_episodes=all_omdb_episodes, ollama_url=ollama_url, primary_model=primary_model, fallback_model=fallback_model, log_cb=log)
+
+            s_p_start = start_pct + idx * source_slice
+            s_p_end = s_p_start + source_slice
+
+            await cls.match_source_multistage(
+                db=db,
+                show=show,
+                canonical_episodes=canonical_list,
+                source_name=s_name,
+                source_episodes=s_eps,
+                ollama_url=ollama_url,
+                primary_model=primary_model,
+                fallback_model=fallback_model,
+                progress_range=(s_p_start, s_p_end),
+                progress_cb=update_job_progress,
+                log_cb=log
+            )
 
         # 6. Final Status Evaluation (Step 2C)
-        available_sources_count = sum(1 for el in [all_tmdb_episodes, all_tvmaze_episodes, all_omdb_episodes] if len(el) > 0)
+        await update_job_progress(95.0, "Auditing final multi-source consistency and integrity...")
+        available_sources_count = len(active_sources)
         
         for ep in canonical_list:
             stmt_m = select(EpisodeSourceMetadata).where(EpisodeSourceMetadata.episode_id == ep.id)
@@ -877,5 +939,5 @@ class MatchingEngine:
                 ep.ai_audit_notes = "No external match confirmed. Requires manual audit."
 
         await db.commit()
-        await log("Completed multi-stage show matching pass.")
+        await update_job_progress(100.0, "Completed multi-stage show matching pass.")
         return show
