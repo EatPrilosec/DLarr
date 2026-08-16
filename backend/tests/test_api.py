@@ -25,17 +25,22 @@ async def test_health_check():
 async def test_settings_crud():
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        # Get default settings
+        # Get current settings
         res = await client.get("/api/v1/settings")
         assert res.status_code == 200
-        settings = res.json()
-        assert "ollama_url" in settings
+        original_settings = res.json()
+        assert "ollama_url" in original_settings
 
-        # Update settings
-        settings["ollama_primary_model"] = "qwen2.5:7b"
-        post_res = await client.post("/api/v1/settings", json=settings)
-        assert post_res.status_code == 200
-        assert post_res.json()["ollama_primary_model"] == "qwen2.5:7b"
+        try:
+            # Test update settings
+            updated_payload = dict(original_settings)
+            updated_payload["ollama_primary_model"] = "test-model:latest"
+            post_res = await client.post("/api/v1/settings", json=updated_payload)
+            assert post_res.status_code == 200
+            assert post_res.json()["ollama_primary_model"] == "test-model:latest"
+        finally:
+            # Restore original settings to never overwrite user configuration
+            await client.post("/api/v1/settings", json=original_settings)
 
 
 @pytest.mark.asyncio
