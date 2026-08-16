@@ -56,6 +56,28 @@ async def cancel_job(job_id: int, db: AsyncSession = Depends(get_db)):
     return {"success": True, "message": f"Job #{job_id} cancelled."}
 
 
+@router.post("/cancel-all")
+async def cancel_all_jobs(db: AsyncSession = Depends(get_db)):
+    from datetime import datetime
+    from backend.app.services.concurrency_manager import concurrency_manager
+
+    stmt = select(Job).where(Job.status.in_(["RUNNING", "PENDING"]))
+    res = await db.execute(stmt)
+    active_jobs = res.scalars().all()
+
+    count = 0
+    for job in active_jobs:
+        concurrency_manager.cancel_job(job.id)
+        job.status = "CANCELLED"
+        job.message = "Job cancelled by user."
+        job.logs = (job.logs or "") + "\n[JOB CANCELLED] Cancelled by user."
+        job.finished_at = datetime.utcnow()
+        count += 1
+
+    await db.commit()
+    return {"success": True, "message": f"Cancelled {count} active jobs.", "cancelled_count": count}
+
+
 @router.get("/{job_id}/stream")
 async def stream_job_progress(job_id: int):
     """Server-Sent Events (SSE) endpoint to stream live logs and progress to the WebUI."""

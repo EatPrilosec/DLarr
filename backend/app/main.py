@@ -14,6 +14,40 @@ from backend.app.api.v1.router import api_router
 async def lifespan(app: FastAPI):
     # Initialize SQLite database schema
     await init_db()
+
+    # 1. Sync concurrency manager with saved settings in DB
+    # 2. Cleanup stale RUNNING / PENDING jobs from previous server sessions
+    from backend.app.core.database import AsyncSessionLocal
+    from backend.app.models.setting import Setting
+    from backend.app.models.job import Job
+    from backend.app.services.concurrency_manager import concurrency_manager
+    from sqlalchemy import select, update
+    from datetime import datetime
+
+    async with AsyncSessionLocal() as db:
+        try:
+            # Load settings
+            stmt = select(Setting)
+            res = await db.execute(stmt)
+            data = {r.key: r.value for r in res.scalars().all()}
+            max_jobs = int(data.get("max_concurrent_jobs", 1)) if str(data.get("max_concurrent_jobs", "")).isdigit() else 1
+            max_ollama = int(data.get("max_concurrent_ollama_requests", 1)) if str(data.get("max_concurrent_ollama_requests", "")).isdigit() else 1
+            concurrency_manager.update_limits(max_jobs, max_ollama)
+
+            # Cleanup stale jobs
+            await db.execute(
+                update(Job)
+                .where(Job.status.in_(["RUNNING", "PENDING"]))
+                .values(
+                    status="CANCELLED",
+                    message="Cancelled due to server restart.",
+                    finished_at=datetime.utcnow()
+                )
+            )
+            await db.commit()
+        except Exception:
+            pass
+
     yield
 
 

@@ -115,4 +115,10 @@ export const api = {
     if (!res.ok) throw new Error('Failed to cancel job');
     return res.json();
   },
+
+  async cancelAllJobs(): Promise<{ success: boolean; message: string; cancelled_count: number }> {
+    const res = await fetch(`${API_BASE}/jobs/cancel-all`, { method: 'POST' });
+    if (!res.ok) throw new Error('Failed to cancel all jobs');
+    return res.json();
+  },
 };

@@ -73,13 +73,34 @@ export const Activity: React.FC<ActivityProps> = ({ activeJobId }) => {
           <p className="text-xs text-slate-400 mt-1">Real-time status of metadata ingestion, AI episode matching, and consistency audits</p>
         </div>
 
-        <button
-          onClick={loadJobs}
-          className="bg-dark-700 hover:bg-dark-600 text-slate-200 px-4 py-2 rounded-xl text-xs font-semibold border border-dark-600 transition-colors flex items-center space-x-1.5"
-        >
-          <RefreshCw className="w-4 h-4" />
-          <span>Refresh</span>
-        </button>
+        <div className="flex items-center space-x-2">
+          {jobs.some(j => j.status === 'RUNNING' || j.status === 'PENDING') && (
+            <button
+              onClick={async () => {
+                if (confirm('Are you sure you want to stop all active and pending jobs?')) {
+                  try {
+                    await api.cancelAllJobs();
+                    loadJobs();
+                  } catch (err) {
+                    console.error('Failed to cancel all jobs:', err);
+                  }
+                }
+              }}
+              className="bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/30 px-3.5 py-2 rounded-xl text-xs font-semibold flex items-center space-x-1.5 transition-colors"
+            >
+              <StopCircle className="w-3.5 h-3.5" />
+              <span>Cancel All Jobs</span>
+            </button>
+          )}
+
+          <button
+            onClick={loadJobs}
+            className="bg-dark-700 hover:bg-dark-600 text-slate-200 px-4 py-2 rounded-xl text-xs font-semibold border border-dark-600 transition-colors flex items-center space-x-1.5"
+          >
+            <RefreshCw className="w-4 h-4" />
+            <span>Refresh</span>
+          </button>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
