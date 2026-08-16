@@ -380,10 +380,10 @@ class MatchingEngine:
                 remaining_pairs = [p for p in batch_pairs if p[0].id not in confirmed_ids]
                 if not remaining_pairs:
                     break
+                models_used.append(fb)
                 fb_confirmed, _ = await _query_batch_single_model(fb, remaining_pairs)
                 if fb_confirmed:
                     confirmed_ids.update(fb_confirmed)
-                    models_used.append(fb)
                 if len(confirmed_ids) == len(batch_pairs):
                     break
 
@@ -457,6 +457,8 @@ class MatchingEngine:
         elif isinstance(fallback_model, str) and fallback_model.strip():
             fallbacks = [fallback_model.strip()]
 
+        models_attempted = [primary_model]
+
         # 1. Try Primary Model (up to 2 attempts)
         for _ in range(2):
             try:
@@ -469,7 +471,7 @@ class MatchingEngine:
                 )
                 match = re.search(r"S(\d+)E(\d+)", resp_text or "", re.IGNORECASE)
                 if match:
-                    return (int(match.group(1)), int(match.group(2))), primary_model
+                    return (int(match.group(1)), int(match.group(2))), "+".join(models_attempted)
             except Exception:
                 pass
 
@@ -477,6 +479,7 @@ class MatchingEngine:
         for fb in fallbacks:
             if not fb or fb == primary_model:
                 continue
+            models_attempted.append(fb)
             for _ in range(2):
                 try:
                     resp_text = await OllamaClient.query_model_text(
@@ -488,11 +491,11 @@ class MatchingEngine:
                     )
                     match = re.search(r"S(\d+)E(\d+)", resp_text or "", re.IGNORECASE)
                     if match:
-                        return (int(match.group(1)), int(match.group(2))), fb
+                        return (int(match.group(1)), int(match.group(2))), "+".join(models_attempted)
                 except Exception:
                     pass
 
-        return None, primary_model
+        return None, "+".join(models_attempted)
 
     @classmethod
     async def match_source_multistage(

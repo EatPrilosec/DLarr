@@ -134,7 +134,7 @@ async def test_step2_ai_search_candidates():
             source_name="TMDB"
         )
         assert res_fb == (2, 3)
-        assert model_used_fb == "fb_2"
+        assert model_used_fb == "primary+fb_1+fb_2"
 
 
 @pytest.mark.asyncio
