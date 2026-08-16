@@ -47,7 +47,7 @@ async def init_db() -> None:
         import backend.app.models.job  # noqa: F401
         await conn.run_sync(Base.metadata.create_all)
 
-        # Automatic SQLite schema migration for columns added over time
+        # Automatic SQLite schema migration for columns/indexes added over time
         def migrate_schema(sync_conn):
             cursor = sync_conn.connection.cursor()
             try:
@@ -55,6 +55,17 @@ async def init_db() -> None:
                 cols = [row[1] for row in cursor.fetchall()]
                 if "payload" not in cols:
                     cursor.execute("ALTER TABLE jobs ADD COLUMN payload TEXT")
+
+                # Deduplicate and ensure unique index on (episode_id, source_name)
+                cursor.execute("""
+                    DELETE FROM episode_source_metadata
+                    WHERE id NOT IN (
+                        SELECT MAX(id)
+                        FROM episode_source_metadata
+                        GROUP BY episode_id, source_name
+                    )
+                """)
+                cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS uix_episode_source ON episode_source_metadata (episode_id, source_name)")
             except Exception:
                 pass
             finally:

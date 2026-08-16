@@ -3,7 +3,7 @@ import re
 import difflib
 from typing import Dict, Any, List, Optional, Tuple, Callable, Awaitable, Set
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, delete
 
 from backend.app.models.show import Show, Episode, EpisodeSourceMetadata
 from backend.app.models.job import Job
@@ -489,6 +489,17 @@ class MatchingEngine:
         if not source_episodes:
             await log(f"[{source_name}] No external episodes available in source index.")
             return
+
+        # Clean up prior metadata for this source on target canonical episodes to avoid duplicates on rescans
+        canonical_ids = [ep.id for ep in canonical_episodes]
+        if canonical_ids:
+            await db.execute(
+                delete(EpisodeSourceMetadata).where(
+                    EpisodeSourceMetadata.episode_id.in_(canonical_ids),
+                    EpisodeSourceMetadata.source_name == source_name.lower()
+                )
+            )
+            await db.commit()
 
         mapped_source_keys: Set[Tuple[int, int]] = set()
         mapped_canonical_ids: Set[int] = set()

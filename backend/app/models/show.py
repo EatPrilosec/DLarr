@@ -1,5 +1,5 @@
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, Text, ForeignKey, Float
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, Text, ForeignKey, Float, UniqueConstraint
 from sqlalchemy.orm import relationship
 from backend.app.core.database import Base
 
@@ -64,6 +64,7 @@ class Episode(Base):
 
 class EpisodeSourceMetadata(Base):
     __tablename__ = "episode_source_metadata"
+    __table_args__ = (UniqueConstraint("episode_id", "source_name", name="uix_episode_source"),)
 
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
     episode_id = Column(Integer, ForeignKey("episodes.id", ondelete="CASCADE"), nullable=False, index=True)
