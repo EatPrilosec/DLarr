@@ -95,19 +95,46 @@ async def test_step2_ai_search_candidates():
         {"season": 2, "episode": 3, "title": "Lost Flight", "overview": "A plane goes missing"},
     ]
 
-    with patch("backend.app.services.ollama_client.OllamaClient.query_with_retry_and_fallback") as mock_query:
-        mock_query.return_value = ("S02E03", "primary")
+    async def mock_query(base_url, model, user_prompt, system_prompt=None, timeout=None):
+        if model == "primary":
+            return "S02E03"
+        return ""
 
-        res, _ = await MatchingEngine.ai_search_candidates(
+    with patch("backend.app.services.ollama_client.OllamaClient.query_model_text", side_effect=mock_query):
+        res, model_used = await MatchingEngine.ai_search_candidates(
             ollama_url="http://mock:11434",
             primary_model="primary",
-            fallback_model="fallback",
+            fallback_model=["fb_1", "fb_2"],
             show_title="Test Show",
             canonical_ep=sonarr_ep,
             candidates=candidates,
             source_name="TMDB"
         )
         assert res == (2, 3)
+        assert model_used == "primary"
+
+    # Test fallback search when primary returns invalid/NONE
+    async def mock_query_fallback(base_url, model, user_prompt, system_prompt=None, timeout=None):
+        if model == "primary":
+            return "NONE"
+        elif model == "fb_1":
+            return "no match found"
+        elif model == "fb_2":
+            return "match is S02E03"
+        return ""
+
+    with patch("backend.app.services.ollama_client.OllamaClient.query_model_text", side_effect=mock_query_fallback):
+        res_fb, model_used_fb = await MatchingEngine.ai_search_candidates(
+            ollama_url="http://mock:11434",
+            primary_model="primary",
+            fallback_model=["fb_1", "fb_2"],
+            show_title="Test Show",
+            canonical_ep=sonarr_ep,
+            candidates=candidates,
+            source_name="TMDB"
+        )
+        assert res_fb == (2, 3)
+        assert model_used_fb == "fb_2"
 
 
 @pytest.mark.asyncio
@@ -155,3 +182,40 @@ async def test_manual_match_and_mark_no_match_api():
         tvmaze_var = [v for v in variations if v["source_name"] == "tvmaze"]
         assert len(tvmaze_var) == 1
         assert tvmaze_var[0]["match_method"] == "NO_MATCH"
+
+
+@pytest.mark.asyncio
+async def test_batch_cascades_through_multiple_fallbacks():
+    ep1 = Episode(id=101, season_number=1, episode_number=1, title="Alpha")
+    ep2 = Episode(id=102, season_number=1, episode_number=2, title="Beta")
+    ep3 = Episode(id=103, season_number=1, episode_number=3, title="Gamma")
+
+    batch_pairs = [
+        (ep1, {"season": 1, "episode": 1, "title": "Alpha"}),
+        (ep2, {"season": 1, "episode": 2, "title": "Beta"}),
+        (ep3, {"season": 1, "episode": 3, "title": "Gamma"}),
+    ]
+
+    # Primary model rejects S01E02 and S01E03 (confirms only ep1)
+    # Fallback 1 confirms S01E02 (rejects S01E03)
+    # Fallback 2 confirms S01E03
+    async def mock_query(base_url, model, user_prompt, system_prompt=None, timeout=None):
+        if model == "primary":
+            return "S01E02, S01E03"  # failed list
+        elif model == "fb_1":
+            return "S01E03"          # failed list
+        elif model == "fb_2":
+            return "yes"             # confirms ep3
+        return ""
+
+    with patch("backend.app.services.ollama_client.OllamaClient.query_model_text", side_effect=mock_query):
+        confirmed_ids, model_used = await MatchingEngine.ai_batch_confirm_matches(
+            ollama_url="http://mock:11434",
+            primary_model="primary",
+            fallback_model=["fb_1", "fb_2"],
+            show_title="Test Cascade Show",
+            source_name="TMDB",
+            batch_pairs=batch_pairs
+        )
+        assert confirmed_ids == {101, 102, 103}
+        assert model_used == "primary+fb_1+fb_2"

@@ -238,26 +238,32 @@ class MatchingEngine:
         )
         matches_p = set((int(s), int(e)) for s, e in re.findall(r"S(\d+)E(\d+)", resp_p, re.IGNORECASE))
 
-        if not matches_p or not fallback_model or fallback_model == primary_model:
+        fallbacks: List[str] = []
+        if isinstance(fallback_model, list):
+            fallbacks = [str(m).strip() for m in fallback_model if str(m).strip()]
+        elif isinstance(fallback_model, str) and fallback_model.strip():
+            fallbacks = [fallback_model.strip()]
+
+        if not matches_p or not fallbacks:
             return matches_p
 
-        # 2. Query Fallback Model (first available fallback model)
-        fb_to_use = fallback_model[0] if isinstance(fallback_model, list) and fallback_model else fallback_model
-        if not fb_to_use or fb_to_use == primary_model:
-            return matches_p
+        # 2. Query Fallback Models in sequential priority order
+        for fb in fallbacks:
+            if not fb or fb == primary_model:
+                continue
+            resp_f, _ = await OllamaClient.query_with_retry_and_fallback(
+                base_url=ollama_url,
+                primary_model=fb,
+                fallback_model=None,
+                user_prompt=prompt,
+                system_prompt=system_prompt
+            )
+            matches_f = set((int(s), int(e)) for s, e in re.findall(r"S(\d+)E(\d+)", resp_f, re.IGNORECASE))
+            if matches_f:
+                # Both models agree on these no-match episodes
+                return matches_p.intersection(matches_f)
 
-        resp_f, _ = await OllamaClient.query_with_retry_and_fallback(
-            base_url=ollama_url,
-            primary_model=fb_to_use,
-            fallback_model=None,
-            user_prompt=prompt,
-            system_prompt=system_prompt
-        )
-        matches_f = set((int(s), int(e)) for s, e in re.findall(r"S(\d+)E(\d+)", resp_f, re.IGNORECASE))
-
-        # Both models must agree
-        agreed = matches_p.intersection(matches_f)
-        return agreed
+        return matches_p
 
     @staticmethod
     async def ai_batch_confirm_matches(
@@ -271,7 +277,7 @@ class MatchingEngine:
         """
         Step 1A/1B/2B: Batch High-Context Confirmation Prompt
         Prompts LLM to confirm comparisons with 'yes', or output comma-separated failed SxxEyy.
-        If primary model does not confirm all items, iterates through fallback models on the remaining unconfirmed items.
+        If primary model does not confirm all items, iterates through all fallback models on the remaining unconfirmed items.
         Returns: (confirmed_canonical_ids: Set[int], model_used: str)
         """
         if not batch_pairs:
@@ -361,7 +367,7 @@ class MatchingEngine:
         confirmed_ids, all_confirmed = await _query_batch_single_model(primary_model, batch_pairs)
         models_used = [primary_model]
 
-        # 2. If primary did not confirm all items, iterate through fallback models on remaining unconfirmed pairs
+        # 2. If primary did not confirm all items, iterate through all fallback models on remaining unconfirmed pairs
         if not all_confirmed and fallbacks:
             for fb in fallbacks:
                 if not fb or fb == primary_model:
@@ -391,6 +397,7 @@ class MatchingEngine:
         """
         Step 2A: AI Candidate List Search Prompt (Single Episode)
         Prompts LLM to select matching SxxEyy from remaining unmapped source pool.
+        Iterates through primary and all configured fallback models until a match is found.
         """
         if not ollama_url or not candidates:
             return None, "NO_CANDIDATES"
@@ -435,21 +442,48 @@ class MatchingEngine:
             "If none matches, answer NONE."
         )
 
-        resp_text, model_used = await OllamaClient.query_with_retry_and_fallback(
-            base_url=ollama_url,
-            primary_model=primary_model,
-            fallback_model=fallback_model,
-            user_prompt=prompt,
-            system_prompt=system_prompt
-        )
+        fallbacks: List[str] = []
+        if isinstance(fallback_model, list):
+            fallbacks = [str(m).strip() for m in fallback_model if str(m).strip()]
+        elif isinstance(fallback_model, str) and fallback_model.strip():
+            fallbacks = [fallback_model.strip()]
 
-        match = re.search(r"S(\d+)E(\d+)", resp_text, re.IGNORECASE)
-        if match:
-            s_num = int(match.group(1))
-            e_num = int(match.group(2))
-            return (s_num, e_num), model_used
+        # 1. Try Primary Model (up to 2 attempts)
+        for _ in range(2):
+            try:
+                resp_text = await OllamaClient.query_model_text(
+                    base_url=ollama_url,
+                    model=primary_model,
+                    user_prompt=prompt,
+                    system_prompt=system_prompt,
+                    timeout=90.0
+                )
+                match = re.search(r"S(\d+)E(\d+)", resp_text or "", re.IGNORECASE)
+                if match:
+                    return (int(match.group(1)), int(match.group(2))), primary_model
+            except Exception:
+                pass
 
-        return None, model_used
+        # 2. Try Fallback Models in sequence
+        for fb in fallbacks:
+            if not fb or fb == primary_model:
+                continue
+            for _ in range(2):
+                try:
+                    resp_text = await OllamaClient.query_model_text(
+                        base_url=ollama_url,
+                        model=fb,
+                        user_prompt=prompt,
+                        system_prompt=system_prompt,
+                        timeout=90.0
+                    )
+                    match = re.search(r"S(\d+)E(\d+)", resp_text or "", re.IGNORECASE)
+                    if match:
+                        return (int(match.group(1)), int(match.group(2))), fb
+                except Exception:
+                    pass
+
+        return None, primary_model
 
     @classmethod
     async def match_source_multistage(
