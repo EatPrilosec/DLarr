@@ -1,13 +1,6 @@
 import pytest
-import asyncio
 from httpx import AsyncClient, ASGITransport
 from backend.app.main import app
-from backend.app.core.database import init_db
-
-
-@pytest.fixture(scope="session", autouse=True)
-def init_test_database():
-    asyncio.run(init_db())
 
 
 @pytest.mark.asyncio
